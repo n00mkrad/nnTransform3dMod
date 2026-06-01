@@ -33,6 +33,7 @@ struct LdJsonMetadata {
 
 struct Y4mNtscConfig {
     bool fullFrame = false;
+    bool forceLimited = false;
     int activeVideoStartOverride = -1;
     int activeVideoEndOverride = -1;
     int firstLine = 40;

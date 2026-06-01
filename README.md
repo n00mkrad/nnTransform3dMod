@@ -1,10 +1,10 @@
 ## nnTransform3D (CUDA 12 required)
 
 Basic Usage:  
-`nnTransform3D.exe [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--json <path>] [--full-frame] [--first-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc]`
+`nnTransform3D.exe [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--json <path>] [--full-frame] [--force-limited] [--first-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc]`
 
 Full Usage:  
-`nnTransform3D.exe [--input <path>] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--full-frame] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc]`
+`nnTransform3D.exe [--input <path>] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--full-frame] [--force-limited] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc]`
 
 Options:  
 `--av-start`: Active video area start (in pixels, horizontal).  
@@ -17,6 +17,7 @@ Options:
 `--out`: Output path, or `-` for binary stdout. In TBC mode, `--out -` is only valid when `--tbc-pipe-mode` is set.  
 `--json`: Metadata JSON path. If omitted, `<input>.json` is used if present.  
 `--full-frame`: For `raw_y`, `raw_yc`, and `y4m`, output full frame geometry including blanking regions.  
+`--force-limited`: For `y4m`, clamp all output samples to legal limited range (`Y` 16..235, `Cb/Cr` 16..240 in 8-bit-equivalent terms).
 `--first-line`: First output line for active-area output (default `40`).  
 `--last-line`: Last output line for active-area output (exclusive).  
 `--lines`: Active output height in lines. Used to derive `last-line` from `first-line` when `--last-line` is omitted. Default: `480`.  
@@ -44,7 +45,8 @@ Range derivation precedence:
 
 ### Y4M Output Mode
 
-- `--out-mode y4m` writes YUV4MPEG2 `YUV444P16` limited-range frames.
+- `--out-mode y4m` writes YUV4MPEG2 `YUV444P16` limited-range frames. By default, nominal levels are limited-range while headroom/footroom samples are preserved.
+- `--force-limited` clips all Y4M pixels to legal limited range (`Y` 16..235, `Cb/Cr` 16..240 in 8-bit-equivalent terms).
 - Video is merged from separated luma and chroma using minimal `mono`/`ntsc1d` decoders. More advanced comb filters are not needed as Y/C is already cleanly separated.
 - `--start-frame` keeps Y4M phase continuity aligned to absolute source-frame position.
 - Default is active-area output, using horizontal metadata bounds (or AV overrides) and `--first-line` / `--last-line`.
@@ -68,6 +70,9 @@ nnTransform3D --input input.tbc --out-mode y4m --json tbc-example.json --full-fr
 
 # Start at source frame 1000 (0-based) while preserving temporal context at the boundary
 nnTransform3D --input input.tbc --out-mode y4m --start-frame 1000 --out output_from_1000.y4m
+
+# Clamp Y4M samples to strict legal limited range
+nnTransform3D --input input.tbc --out-mode y4m --force-limited --out output_legal.y4m
 ```
 
 ### Default TBC File Output

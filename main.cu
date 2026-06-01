@@ -684,7 +684,7 @@ bool resolveModelPath(const char* argv0, const std::string& modelPathArg, bool m
 }
 
 void printUsage(const char* exeName) {
-    std::cerr << "Usage: " << exeName << " [--input <path>] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--full-frame] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc]\n";
+    std::cerr << "Usage: " << exeName << " [--input <path>] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--full-frame] [--force-limited] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc]\n";
     std::cerr << "Defaults: --out-mode tbc, --gpu 0, --trt_mpi 1000, --trt_mss 1, --start-frame 0, --end-frame 0, --av-start 132, --av-end 896, --lines 480\n";
 }
 
@@ -698,6 +698,7 @@ int main(int argc, char** argv) {
     OutputMode outputMode = OutputMode::Tbc;
     TbcPipeMode tbcPipeMode = TbcPipeMode::None;
     bool fullFrame = false;
+    bool forceLimited = false;
     int firstLine = 40;
     int lastLine = 525;
     int lines = 480;
@@ -961,6 +962,9 @@ int main(int argc, char** argv) {
         else if (arg == "--full-frame") {
             fullFrame = true;
         }
+        else if (arg == "--force-limited") {
+            forceLimited = true;
+        }
         else if (arg == "--first-line") {
             if (!nextValueAvailable()) {
                 std::cerr << "[Error] Missing value after --first-line.\n";
@@ -1046,6 +1050,12 @@ int main(int argc, char** argv) {
 
     if (outputMode == OutputMode::Tbc && (fullFrame || firstLineSpecified || lastLineSpecified || linesSpecified)) {
         std::cerr << "[Error] --full-frame, --first-line, --last-line, and --lines are not valid with --out-mode tbc.\n";
+        printUsage(argv[0]);
+        return -1;
+    }
+
+    if (forceLimited && outputMode != OutputMode::Y4m) {
+        std::cerr << "[Error] --force-limited is only valid with --out-mode y4m.\n";
         printUsage(argv[0]);
         return -1;
     }
@@ -1163,6 +1173,7 @@ int main(int argc, char** argv) {
         log << "Output Mode: Y4M\n";
         log << "Y4M Output: " << (writeY4mToStdout ? "stdout (-)" : outPath) << "\n";
         log << "Frame Area: " << (fullFrame ? "full" : "active") << "\n";
+        log << "Y4M Range Clamp: " << (forceLimited ? "legal" : "headroom/footroom") << "\n";
         if (!fullFrame) {
             log << "First Line: " << firstLine << "\n";
             log << "Last Line: " << lastLine << "\n";
@@ -1277,6 +1288,7 @@ int main(int argc, char** argv) {
         try {
             Y4mNtscConfig y4mConfig;
             y4mConfig.fullFrame = fullFrame;
+            y4mConfig.forceLimited = forceLimited;
             y4mConfig.activeVideoStartOverride = fullFrame ? -1 : activeVideoStart;
             y4mConfig.activeVideoEndOverride = fullFrame ? -1 : activeVideoEnd;
             y4mConfig.firstLine = firstLine;

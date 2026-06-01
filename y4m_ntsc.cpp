@@ -13,12 +13,16 @@ namespace {
 using json = nlohmann::json;
 
 static constexpr double Y_MIN = 1.0 * 256.0;
+static constexpr double Y_LEGAL_MIN = 16.0 * 256.0;
 static constexpr double Y_ZERO = 16.0 * 256.0;
 static constexpr double Y_SCALE = 219.0 * 256.0;
+static constexpr double Y_LEGAL_MAX = 235.0 * 256.0;
 static constexpr double Y_MAX = 254.75 * 256.0;
 static constexpr double C_MIN = 1.0 * 256.0;
+static constexpr double C_LEGAL_MIN = 16.0 * 256.0;
 static constexpr double C_ZERO = 128.0 * 256.0;
 static constexpr double C_SCALE = 112.0 * 256.0;
+static constexpr double C_LEGAL_MAX = 240.0 * 256.0;
 static constexpr double C_MAX = 254.75 * 256.0;
 static constexpr double ONE_MINUS_Kb = 1.0 - 0.114;
 static constexpr double ONE_MINUS_Kr = 1.0 - 0.299;
@@ -132,15 +136,21 @@ bool Y4mNtscWriter::getLinePhase(int lineNumber, int firstFieldPhaseID, int seco
 }
 
 uint16_t Y4mNtscWriter::mapYToLimited(double y) const {
-    return static_cast<uint16_t>(std::clamp(((y - yOffset) * yScale) + Y_ZERO, Y_MIN, Y_MAX));
+    const double minValue = config.forceLimited ? Y_LEGAL_MIN : Y_MIN;
+    const double maxValue = config.forceLimited ? Y_LEGAL_MAX : Y_MAX;
+    return static_cast<uint16_t>(std::clamp(((y - yOffset) * yScale) + Y_ZERO, minValue, maxValue));
 }
 
 uint16_t Y4mNtscWriter::mapUToLimited(double u) const {
-    return static_cast<uint16_t>(std::clamp((u * cbScale) + C_ZERO, C_MIN, C_MAX));
+    const double minValue = config.forceLimited ? C_LEGAL_MIN : C_MIN;
+    const double maxValue = config.forceLimited ? C_LEGAL_MAX : C_MAX;
+    return static_cast<uint16_t>(std::clamp((u * cbScale) + C_ZERO, minValue, maxValue));
 }
 
 uint16_t Y4mNtscWriter::mapVToLimited(double v) const {
-    return static_cast<uint16_t>(std::clamp((v * crScale) + C_ZERO, C_MIN, C_MAX));
+    const double minValue = config.forceLimited ? C_LEGAL_MIN : C_MIN;
+    const double maxValue = config.forceLimited ? C_LEGAL_MAX : C_MAX;
+    return static_cast<uint16_t>(std::clamp((v * crScale) + C_ZERO, minValue, maxValue));
 }
 
 double Y4mNtscWriter::convolve5Tap(const std::vector<double>& data, int index) const {
