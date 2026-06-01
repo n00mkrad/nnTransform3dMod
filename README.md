@@ -1,7 +1,17 @@
-## nnTransform3D (CUDA 12 required)
+## nnTransform3dMod
+
+Fork features compared to original implementation:
+- Built-in chroma decoder with the option to directly output YUV video to file or stdout (pipe)
+- TBC or raw video can also be piped out (only one pipe, so either specify Y/C or interleaving mode)
+- Automatic metadata loading from `.tbc.json` if available
+- Options to specify start/end frame numbers
+- Additional QoL stuff and more control via CLI arguments (e.g. specify location of metadata JSON or model file or set output lines/height)
 
 Basic Usage:  
-`nnTransform3D.exe [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--json <path>] [--full-frame] [--force-limited] [--first-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc]`
+`nnTransform3D.exe [--out-mode tbc|raw_y|raw_yc|y4m] [--first-line <num>] [--out <path|->] [input.tbc]`
+
+Example: `nnTransform3D.exe --out-mode y4m --first-line 42 --out decoded.y4m MyCapture.tbc`  
+-> Loads `MyCapture.tbc` along with the metadata (expected at `MyCapture.tbc.json`), with active image starting at line 42 with a default height of 480, outputs `decoded.y4m` which is raw/lossless YUV 4:2:2 16-bit, interlaced 760x480 video (exact width depends on metadata or CLI args).
 
 Full Usage:  
 `nnTransform3D.exe [--input <path>] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--full-frame] [--force-limited] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc]`
@@ -47,9 +57,9 @@ Range derivation precedence:
 
 - `--out-mode y4m` writes YUV4MPEG2 `YUV444P16` limited-range frames. By default, nominal levels are limited-range while headroom/footroom samples are preserved.
 - `--force-limited` clips all Y4M pixels to legal limited range (`Y` 16..235, `Cb/Cr` 16..240 in 8-bit-equivalent terms).
-- Video is merged from separated luma and chroma using minimal `mono`/`ntsc1d` decoders. More advanced comb filters are not needed as Y/C is already cleanly separated.
+- Video is merged from separated luma and chroma using minimal `mono`/`ntsc1d` decoders. More advanced comb filters are not needed as Y/C is already cleanly separated by the neural network.
 - `--start-frame` keeps Y4M phase continuity aligned to absolute source-frame position.
-- Default is active-area output, using horizontal metadata bounds (or AV overrides) and `--first-line` / `--last-line`.
+- Default is active-area output, using horizontal metadata bounds (or CLI overrides) and `--first-line` / `--last-line`.
 - `--full-frame` outputs full metadata geometry (`fieldWidth x ((fieldHeight * 2) - 1)`).
 - `--out -` is supported for piping Y4M to stdout.
 
@@ -67,12 +77,6 @@ nnTransform3D --input input.tbc --out-mode y4m --json tbc-example.json --av-star
 
 # Full-frame Y4M output
 nnTransform3D --input input.tbc --out-mode y4m --json tbc-example.json --full-frame --out output_full.y4m
-
-# Start at source frame 1000 (0-based) while preserving temporal context at the boundary
-nnTransform3D --input input.tbc --out-mode y4m --start-frame 1000 --out output_from_1000.y4m
-
-# Clamp Y4M samples to strict legal limited range
-nnTransform3D --input input.tbc --out-mode y4m --force-limited --out output_legal.y4m
 ```
 
 ### Default TBC File Output
@@ -86,9 +90,9 @@ All TBC pipe modes emit headerless `uint16` little-endian samples and preserve c
 - `--tbc-pipe-mode y`: Emit only luma TBC frame chunks.
 - `--tbc-pipe-mode c`: Emit only chroma TBC frame chunks.
 - `--tbc-pipe-mode yc_alt`: Emit luma chunk then chroma chunk for each source frame. Interpret as `910x526` with doubled frame cadence. (60000/1001 FPS with alternating Y/C)
-- `--tbc-pipe-mode yc_stack`: Emit the same byte order as `yc_alt`, but interpret as vertically stacked `910x1052` frames (Y top, C bottom). This is intentionally out-of-spec TBC geometry.
+- `--tbc-pipe-mode yc_stack`: Emit the same byte order as `yc_alt`, but interpret as vertically stacked `910x1052` frames (Y top, C bottom). This is intentionally "out-of-spec" TBC geometry.
 
-`yc_alt` and `yc_stack` produce identical bytes; only downstream interpretation differs.
+**Both `yc_alt` and `yc_stack` are "out-of-spec" methods of storing Y+C in a single TBC while keeping them separated - Any downstream software needs to explicitly handle this.** Alternatively, both methods allow reconstruction of either Y or C via ffmpeg (select even/odd frames for `yc_alt` or crop top/bottom for `yc_stack`).
 
 Examples:
 
@@ -133,9 +137,3 @@ nnTransform3D --input input.tbc --out-mode raw_yc --full-frame --out - | ffmpeg 
 # Pipe to mpv to preview full-frame luma output in real time
 nnTransform3D --input input.tbc --out-mode raw_y --full-frame --out - | mpv --demuxer=rawvideo --demuxer-rawvideo-mp-format=gray16le --demuxer-rawvideo-w=910 --demuxer-rawvideo-h=526 --demuxer-rawvideo-fps=30000/1001 -
 ```
-
-### Licensing Note For Y4M Integration
-
-The Y4M NTSC decoder path includes GPL-derived logic from `src_chroma_decoder`.
-Distributions that include this path must remain GPLv3-compatible.
-See `GPL_DERIVED_INTEGRATION_NOTICE.md` and `COPYING.GPL-3.0.txt`.
