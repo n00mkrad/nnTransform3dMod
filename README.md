@@ -7,16 +7,16 @@ Fork features compared to original implementation:
 - Options to specify start/end frame numbers
 - Additional QoL stuff and more control via CLI arguments (e.g. specify location of metadata JSON or model file or set output lines/height)
 
-Basic Usage:  
+#### Basic Usage:  
 `nnTransform3D.exe [--out-mode tbc|raw_y|raw_yc|y4m] [--first-line <num>] [--out <path|->] [input.tbc]`
 
-Example: `nnTransform3D.exe --out-mode y4m --first-line 42 --out decoded.y4m MyCapture.tbc`  
--> Loads `MyCapture.tbc` along with the metadata (expected at `MyCapture.tbc.json`), with active image starting at line 42 with a default height of 480, outputs `decoded.y4m` which is raw/lossless YUV 4:2:2 16-bit, interlaced 760x480 video (exact width depends on metadata or CLI args).
+**Basic Example:** `nnTransform3D --out-mode y4m --first-line 42 --out decoded.y4m input.tbc`  
+-> Loads `input.tbc` along with the metadata (expected at `input.tbc.json`), with active image starting at line 42 with a default height of 480, outputs `decoded.y4m` which is raw/lossless YUV 4:2:2 16-bit, interlaced 760x480 video (exact width depends on metadata or CLI args).
 
-Full Usage:  
+#### Full Usage:  
 `nnTransform3D.exe [--input <path>] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--full-frame] [--force-limited] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc]`
 
-Options:  
+**Options:**  
 `--av-start`: Active video area start (in pixels, horizontal).  
 `--av-end`: Active video area end (in pixels, horizontal).  
 `--width`: Active video width. Used to derive `av-end` from `av-start` when `--av-end` is omitted.  
@@ -33,7 +33,7 @@ Options:
 `--lines`: Active output height in lines. Used to derive `last-line` from `first-line` when `--last-line` is omitted. Default: `480`.  
 `-q`: Disable the progress message (`[Info] Processed n frames...`).  
 
-Advanced:  
+#### Advanced:  
 `--input`: Input TBC file. Explicit/keyword form of positional `[input.tbc]`.
 `--model`: ONNX model path. Default: `chroma_net.onnx` in the executable directory or working directory.  
 `--gpu`: GPU index used for TensorRT and CUDA providers. Default: `0`.  
