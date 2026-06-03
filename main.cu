@@ -1326,8 +1326,21 @@ int main(int argc, char** argv) {
     }
     std::string trtCachePathString = trtCachePath.string();
     log << "TensorRT Engine Cache: " << trtCachePathString << "\n";
+    auto trtCacheHasFiles = [](const std::filesystem::path& cachePath) {
+        std::error_code ec;
+        std::filesystem::recursive_directory_iterator it(cachePath, std::filesystem::directory_options::skip_permission_denied, ec);
+        std::filesystem::recursive_directory_iterator end;
+        while (!ec && it != end) {
+            std::error_code entryEc;
+            if (it->is_regular_file(entryEc) && !entryEc) return true;
+            it.increment(ec);
+        }
+        return false;
+    };
+    bool tensorRtCacheHasFiles = trtCacheHasFiles(trtCachePath);
     Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "nnTransform3D");
     Ort::SessionOptions session_options;
+    bool tensorRtProviderAppended = false;
 
     // --- TensorRT + CUDA Fallback Configuration ---
     try {
@@ -1348,6 +1361,7 @@ int main(int argc, char** argv) {
 
         // Append TensorRT Provider
         session_options.AppendExecutionProvider_TensorRT(trt_options);
+        tensorRtProviderAppended = true;
         log << "TensorRT Execution Provider appended successfully." << std::endl;
 
         // 2. Configure CUDA as fallback
@@ -1364,11 +1378,14 @@ int main(int argc, char** argv) {
 
     std::unique_ptr<Ort::Session> session;
     try {
+        if (tensorRtProviderAppended && !tensorRtCacheHasFiles) {
+            log << "No cached TensorRT engine found. TensorRT will compile a new engine, this may take a few minutes!\n";
+        }
         session = std::make_unique<Ort::Session>(env, resolvedModelPath.c_str(), session_options);
         log << "ONNX Session loaded successfully.\n";
     }
     catch (const std::exception& e) {
-        std::cerr << "Error] ONNX Runtime Exception: " << e.what() << "\n";
+        std::cerr << "[Error] ONNX Runtime Exception: " << e.what() << "\n";
         return -1;
     }
 
