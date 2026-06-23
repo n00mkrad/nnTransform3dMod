@@ -8,6 +8,8 @@
 #include <filesystem>
 #include <limits>
 #include <cctype>
+#include <sstream>
+#include <iomanip>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -713,6 +715,13 @@ bool parseDoubleValue(const std::string& value, double& result) {
     }
 }
 
+// Format byte counts as MiB for compact status output.
+std::string formatMiB(long long bytes) {
+    std::ostringstream ss;
+    ss << std::fixed << std::setprecision(2) << (static_cast<double>(bytes) / (1024.0 * 1024.0)) << " MiB";
+    return ss.str();
+}
+
 // Parse Y4M level presets or explicit black:white scaling levels.
 bool parseLevelsValue(const std::string& value, int& black16bIre, int& white16bIre, std::string& errorMessage) {
     std::string normalized;
@@ -758,6 +767,7 @@ int main(int argc, char** argv) {
     bool fullFrame = false;
     bool forceLimited = false;
     bool levelsSpecified = false;
+    std::string levelsPresetLabel;
     int black16bIreOverride = 0;
     int white16bIreOverride = 0;
     double chromaGain = 1.0;
@@ -782,6 +792,7 @@ int main(int argc, char** argv) {
     int trtMinSubgraphSize = 1;
     int startFrame = 0;
     int endFrame = 0;
+    bool startFrameSpecified = false;
     bool endFrameSpecified = false;
     bool quietProgressLog = false;
     std::filesystem::path executableDir;
@@ -884,6 +895,7 @@ int main(int argc, char** argv) {
             }
             try {
                 startFrame = std::stoi(argv[++argIndex]);
+                startFrameSpecified = true;
                 if (startFrame < 0) {
                     std::cerr << "[Error] --start-frame must be a non-negative integer.\n";
                     printUsage(argv[0]);
@@ -1042,6 +1054,11 @@ int main(int argc, char** argv) {
                 return -1;
             }
             levelsSpecified = true;
+            levelsPresetLabel.clear();
+            std::string normalizedLevelsValue;
+            normalizedLevelsValue.reserve(value.size());
+            for (char c : value) normalizedLevelsValue.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+            if (normalizedLevelsValue == "ntsc" || normalizedLevelsValue == "ntscj") levelsPresetLabel = normalizedLevelsValue;
         }
         else if (arg == "--chroma-gain") {
             if (!nextValueAvailable()) {
@@ -1278,29 +1295,22 @@ int main(int argc, char** argv) {
             std::cerr << "[Error] Y4M metadata is not initialized.\n";
             return -1;
         }
-        log << "Output Mode: Y4M\n";
-        log << "Y4M Output: " << (writeY4mToStdout ? "stdout (-)" : outPath) << "\n";
+        log << "Output Mode: Y4M to " << (writeY4mToStdout ? "stdout" : outPath) << "\n";
         log << "Frame Area: " << (fullFrame ? "full" : "active") << "\n";
-        log << "Y4M Range Clamp: " << (forceLimited ? "legal" : "headroom/footroom") << "\n";
-        log << "Y4M Levels: black " << (levelsSpecified ? black16bIreOverride : metadata.videoParameters.black16bIre) << ", white " << (levelsSpecified ? white16bIreOverride : metadata.videoParameters.white16bIre) << (levelsSpecified ? " (CLI override)\n" : " (metadata)\n");
-        log << "Y4M Chroma Gain: " << chromaGain << (chromaGainSpecified ? " (CLI override)\n" : ((metadata.videoParameters.chromaGain >= 0.0) ? " (metadata)\n" : " (default)\n"));
+        log << "Force Limited Range: " << (forceLimited ? "Yes (Clip)" : "No (Allow headroom/footroom)") << "\n";
+        log << "Levels: black " << (levelsSpecified ? black16bIreOverride : metadata.videoParameters.black16bIre) << ", white " << (levelsSpecified ? white16bIreOverride : metadata.videoParameters.white16bIre) << (levelsSpecified ? (levelsPresetLabel.empty() ? "\n" : " (" + levelsPresetLabel + ")\n") : " (metadata)\n");
+        log << "Chroma Gain: " << chromaGain << ((!chromaGainSpecified && metadata.videoParameters.chromaGain >= 0.0) ? " (metadata)\n" : "\n");
         if (!fullFrame) {
-            log << "First Line: " << firstLine << "\n";
-            log << "Last Line: " << lastLine << "\n";
-            log << "Lines: " << (lastLine - firstLine) << "\n";
-            log << "Y4M Horizontal Active Range: [" << activeVideoStart << ", " << activeVideoEnd << ")\n";
-            log << "Width: " << (activeVideoEnd - activeVideoStart) << "\n";
+            log << "Lines: " << (lastLine - firstLine) << " (" << firstLine << " to " << lastLine << ")\n";
+            log << "Width: " << (activeVideoEnd - activeVideoStart) << " (" << activeVideoStart << " to " << activeVideoEnd << ")\n";
         }
     } else {
         log << "Output Mode: " << ((outputMode == OutputMode::RawY) ? "RAW_Y" : "RAW_YC") << "\n";
         log << "Raw Output: " << (writeRawToStdout ? "stdout (-)" : outPath) << "\n";
         log << "Frame Area: " << (fullFrame ? "full" : "active") << "\n";
         if (!fullFrame) {
-            log << "First Line: " << firstLine << "\n";
-            log << "Last Line: " << lastLine << "\n";
-            log << "Lines: " << (lastLine - firstLine) << "\n";
-            log << "Raw Horizontal Active Range: [" << activeVideoStart << ", " << activeVideoEnd << ")\n";
-            log << "Width: " << (activeVideoEnd - activeVideoStart) << "\n";
+            log << "Lines: " << (lastLine - firstLine) << " (" << firstLine << " to " << lastLine << ")\n";
+            log << "Width: " << (activeVideoEnd - activeVideoStart) << " (" << activeVideoStart << " to " << activeVideoEnd << ")\n";
         }
     }
 
@@ -1313,11 +1323,11 @@ int main(int argc, char** argv) {
     // Check file size
     is.seekg(0, std::ios::end);
     long long fileSize = is.tellg();
-    log << "File opened successfully. Size: " << fileSize << " bytes.\n";
+    log << "File opened successfully. Size: " << formatMiB(fileSize) << ".\n";
 
     // Calculate the number of bytes needed for one frame: 910 * 263 * 2 fields * 2 bytes (uint16)
     const long long frameBytes = FIELD_WIDTH * FIELD_HEIGHT * 2 * 2;
-    log << "Bytes required for ONE frame: " << frameBytes << " bytes.\n";
+    log << "Bytes required for ONE frame: " << formatMiB(frameBytes) << ".\n";
     if (fileSize < 0) {
         std::cerr << "[Error] Failed to determine input file size.\n";
         return -1;
@@ -1361,8 +1371,7 @@ int main(int argc, char** argv) {
 
     const bool suppressPreRollOutput = (startFrame > 0);
     log << "Input Frames Available: " << totalFramesAvailable << "\n";
-    log << "Start Frame (0-based): " << startFrame << "\n";
-    log << "End Frame: " << (limitEndFrame ? std::to_string(endFrame) : "unlimited") << "\n";
+    log << "Frames: " << startFrame << "-" << (limitEndFrame ? endFrame : (totalFramesAvailable - 1)) << ((startFrameSpecified || endFrameSpecified) ? " (zero-indexed)\n" : " (all)\n");
 
     OutputState outputState;
     outputState.mode = outputMode;
@@ -1425,7 +1434,6 @@ int main(int argc, char** argv) {
 
     // Initialize ONNX (with exception handling)
     log << "Initializing ONNX Runtime...\n";
-    log << "Model Path: " << resolvedModelPath.string() << "\n";
     log << "GPU Device: " << gpuId << "\n";
     log << "TensorRT trt_max_partition_iterations: " << trtMaxPartitionIterations << "\n";
     log << "TensorRT trt_min_subgraph_size: " << trtMinSubgraphSize << "\n";
@@ -1437,7 +1445,6 @@ int main(int argc, char** argv) {
         return -1;
     }
     std::string trtCachePathString = trtCachePath.string();
-    log << "TensorRT Engine Cache: " << trtCachePathString << "\n";
     auto trtCacheHasFiles = [](const std::filesystem::path& cachePath) {
         std::error_code ec;
         std::filesystem::recursive_directory_iterator it(cachePath, std::filesystem::directory_options::skip_permission_denied, ec);
