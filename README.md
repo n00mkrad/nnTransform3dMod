@@ -14,7 +14,7 @@ Fork features compared to original implementation:
 -> Loads `input.tbc` along with the metadata (expected at `input.tbc.json`), with active image starting at line 42 with a default height of 480, outputs `decoded.y4m` which is raw/lossless YUV 4:4:4 16-bit, interlaced 760x480 video (exact width depends on metadata or CLI args).
 
 #### Full Usage:  
-`nnTransform3D.exe [--input <path>] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--full-frame] [--force-limited] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc]`
+`nnTransform3D.exe [--input <path>] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--full-frame] [--force-limited] [--levels <black:white|ntsc|ntscj>] [--chroma-gain <number>] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc]`
 
 **Options:**  
 `--av-start`: Active video area start (in pixels, horizontal).  
@@ -28,6 +28,8 @@ Fork features compared to original implementation:
 `--json`: Metadata JSON path. If omitted, `<input>.json` is used if present.  
 `--full-frame`: For `raw_y`, `raw_yc`, and `y4m`, output full frame geometry including blanking regions.  
 `--force-limited`: For `y4m`, clamp all output samples to legal limited range (`Y` 16..235, `Cb/Cr` 16..240 in 8-bit-equivalent terms).
+`--levels`: For `y4m`, override metadata black/white scaling levels. Use `<black>:<white>` raw 16-bit `black16bIre` / `white16bIre` values, `ntsc` (`18048:51200`), or `ntscj` (`15360:51200`).
+`--chroma-gain`: For `y4m`, gain factor applied to chroma components. CLI overrides metadata `videoParameters.chromaGain`; default `1.0` when neither is provided. Use `0` for neutral chroma.
 `--first-line`: First output line for active-area output (default `40`).  
 `--last-line`: Last output line for active-area output (exclusive).  
 `--lines`: Active output height in lines. Used to derive `last-line` from `first-line` when `--last-line` is omitted. Default: `480`.  
@@ -57,6 +59,8 @@ Range derivation precedence:
 
 - `--out-mode y4m` writes YUV4MPEG2 `YUV444P16` limited-range frames. By default, nominal levels are limited-range while headroom/footroom samples are preserved.
 - `--force-limited` clips all Y4M pixels to legal limited range (`Y` 16..235, `Cb/Cr` 16..240 in 8-bit-equivalent terms).
+- `--levels` overrides the Y4M luma/chroma scaling reference levels from metadata. The custom form uses raw 16-bit `black16bIre` / `white16bIre` values, not 8-bit video code values.
+- `--chroma-gain` applies chroma saturation gain after Y/C separation and before Y4M chroma mapping. CLI values override metadata `videoParameters.chromaGain`; default is `1.0`.
 - Video is merged from separated luma and chroma using minimal `mono`/`ntsc1d` decoders. More advanced comb filters are not needed as Y/C is already cleanly separated by the neural network.
 - `--start-frame` keeps Y4M phase continuity aligned to absolute source-frame position.
 - Default is active-area output, using horizontal metadata bounds (or CLI overrides) and `--first-line` / `--last-line`.

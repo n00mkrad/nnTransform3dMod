@@ -7,6 +7,7 @@
 #include <memory>
 #include <filesystem>
 #include <limits>
+#include <cctype>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -684,8 +685,65 @@ bool resolveModelPath(const char* argv0, const std::string& modelPathArg, bool m
 }
 
 void printUsage(const char* exeName) {
-    std::cerr << "Usage: " << exeName << " [--input <path>] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--full-frame] [--force-limited] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc]\n";
+    std::cerr << "Usage: " << exeName << " [--input <path>] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--full-frame] [--force-limited] [--levels <black:white|ntsc|ntscj>] [--chroma-gain <number>] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc]\n";
     std::cerr << "Defaults: --out-mode tbc, --gpu 0, --trt_mpi 1000, --trt_mss 1, --start-frame 0, --end-frame 0, --av-start 132, --av-end 896, --lines 480\n";
+}
+
+// Parse CLI integer values only when the full token is consumed.
+bool parseIntValue(const std::string& value, int& result) {
+    try {
+        std::size_t parsedLength = 0;
+        result = std::stoi(value, &parsedLength);
+        return parsedLength == value.size();
+    }
+    catch (const std::exception&) {
+        return false;
+    }
+}
+
+// Parse CLI floating-point values only when the full token is consumed.
+bool parseDoubleValue(const std::string& value, double& result) {
+    try {
+        std::size_t parsedLength = 0;
+        result = std::stod(value, &parsedLength);
+        return parsedLength == value.size() && std::isfinite(result);
+    }
+    catch (const std::exception&) {
+        return false;
+    }
+}
+
+// Parse Y4M level presets or explicit black:white scaling levels.
+bool parseLevelsValue(const std::string& value, int& black16bIre, int& white16bIre, std::string& errorMessage) {
+    std::string normalized;
+    normalized.reserve(value.size());
+    for (char c : value) normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    if (normalized == "ntsc") {
+        black16bIre = 18048;
+        white16bIre = 51200;
+        return true;
+    }
+    if (normalized == "ntscj") {
+        black16bIre = 15360;
+        white16bIre = 51200;
+        return true;
+    }
+    const std::size_t separator = value.find(':');
+    if (separator == std::string::npos || separator == 0 || separator == value.size() - 1 || value.find(':', separator + 1) != std::string::npos) {
+        errorMessage = "Expected --levels value to be ntsc, ntscj, or <black>:<white>.";
+        return false;
+    }
+    const std::string blackValue = value.substr(0, separator);
+    const std::string whiteValue = value.substr(separator + 1);
+    if (!parseIntValue(blackValue, black16bIre) || !parseIntValue(whiteValue, white16bIre)) {
+        errorMessage = "Custom --levels values must be integers.";
+        return false;
+    }
+    if (white16bIre <= black16bIre) {
+        errorMessage = "--levels white value must be greater than black value.";
+        return false;
+    }
+    return true;
 }
 
 // --- Main program ---
@@ -699,6 +757,11 @@ int main(int argc, char** argv) {
     TbcPipeMode tbcPipeMode = TbcPipeMode::None;
     bool fullFrame = false;
     bool forceLimited = false;
+    bool levelsSpecified = false;
+    int black16bIreOverride = 0;
+    int white16bIreOverride = 0;
+    double chromaGain = 1.0;
+    bool chromaGainSpecified = false;
     int firstLine = 40;
     int lastLine = 525;
     int lines = 480;
@@ -965,6 +1028,40 @@ int main(int argc, char** argv) {
         else if (arg == "--force-limited") {
             forceLimited = true;
         }
+        else if (arg == "--levels") {
+            if (!nextValueAvailable()) {
+                std::cerr << "[Error] Missing value after --levels.\n";
+                printUsage(argv[0]);
+                return -1;
+            }
+            std::string value = argv[++argIndex];
+            std::string levelsError;
+            if (!parseLevelsValue(value, black16bIreOverride, white16bIreOverride, levelsError)) {
+                std::cerr << "[Error] " << levelsError << "\n";
+                printUsage(argv[0]);
+                return -1;
+            }
+            levelsSpecified = true;
+        }
+        else if (arg == "--chroma-gain") {
+            if (!nextValueAvailable()) {
+                std::cerr << "[Error] Missing value after --chroma-gain.\n";
+                printUsage(argv[0]);
+                return -1;
+            }
+            std::string value = argv[++argIndex];
+            if (!parseDoubleValue(value, chromaGain)) {
+                std::cerr << "[Error] Invalid --chroma-gain value.\n";
+                printUsage(argv[0]);
+                return -1;
+            }
+            if (chromaGain < 0.0) {
+                std::cerr << "[Error] Chroma gain must not be less than 0.\n";
+                printUsage(argv[0]);
+                return -1;
+            }
+            chromaGainSpecified = true;
+        }
         else if (arg == "--first-line") {
             if (!nextValueAvailable()) {
                 std::cerr << "[Error] Missing value after --first-line.\n";
@@ -1059,6 +1156,16 @@ int main(int argc, char** argv) {
         printUsage(argv[0]);
         return -1;
     }
+    if (levelsSpecified && outputMode != OutputMode::Y4m) {
+        std::cerr << "[Error] --levels is only valid with --out-mode y4m.\n";
+        printUsage(argv[0]);
+        return -1;
+    }
+    if (chromaGainSpecified && outputMode != OutputMode::Y4m) {
+        std::cerr << "[Error] --chroma-gain is only valid with --out-mode y4m.\n";
+        printUsage(argv[0]);
+        return -1;
+    }
 
     if (tbcPipeMode != TbcPipeMode::None) {
         if (outputMode != OutputMode::Tbc) {
@@ -1085,6 +1192,7 @@ int main(int argc, char** argv) {
         metadataLoaded = true;
         if (!avStartSpecified) activeVideoStart = metadata.videoParameters.activeVideoStart;
         if (!avEndSpecified) activeVideoEnd = metadata.videoParameters.activeVideoEnd;
+        if (!chromaGainSpecified && metadata.videoParameters.chromaGain >= 0.0) chromaGain = metadata.videoParameters.chromaGain;
     } else if (outputMode == OutputMode::Y4m) {
         std::cerr << "[Error] " << metadataError << "\n";
         return -1;
@@ -1174,6 +1282,8 @@ int main(int argc, char** argv) {
         log << "Y4M Output: " << (writeY4mToStdout ? "stdout (-)" : outPath) << "\n";
         log << "Frame Area: " << (fullFrame ? "full" : "active") << "\n";
         log << "Y4M Range Clamp: " << (forceLimited ? "legal" : "headroom/footroom") << "\n";
+        log << "Y4M Levels: black " << (levelsSpecified ? black16bIreOverride : metadata.videoParameters.black16bIre) << ", white " << (levelsSpecified ? white16bIreOverride : metadata.videoParameters.white16bIre) << (levelsSpecified ? " (CLI override)\n" : " (metadata)\n");
+        log << "Y4M Chroma Gain: " << chromaGain << (chromaGainSpecified ? " (CLI override)\n" : ((metadata.videoParameters.chromaGain >= 0.0) ? " (metadata)\n" : " (default)\n"));
         if (!fullFrame) {
             log << "First Line: " << firstLine << "\n";
             log << "Last Line: " << lastLine << "\n";
@@ -1253,8 +1363,6 @@ int main(int argc, char** argv) {
     log << "Input Frames Available: " << totalFramesAvailable << "\n";
     log << "Start Frame (0-based): " << startFrame << "\n";
     log << "End Frame: " << (limitEndFrame ? std::to_string(endFrame) : "unlimited") << "\n";
-    log << "Decode Start Frame: " << decodeStartFrame << (suppressPreRollOutput ? " (pre-roll enabled)\n" : "\n");
-    log << "Decode Start Byte Offset: " << decodeStartByteOffset << "\n";
 
     OutputState outputState;
     outputState.mode = outputMode;
@@ -1289,11 +1397,15 @@ int main(int argc, char** argv) {
             Y4mNtscConfig y4mConfig;
             y4mConfig.fullFrame = fullFrame;
             y4mConfig.forceLimited = forceLimited;
+            y4mConfig.levelsOverride = levelsSpecified;
+            y4mConfig.black16bIreOverride = black16bIreOverride;
+            y4mConfig.white16bIreOverride = white16bIreOverride;
             y4mConfig.activeVideoStartOverride = fullFrame ? -1 : activeVideoStart;
             y4mConfig.activeVideoEndOverride = fullFrame ? -1 : activeVideoEnd;
             y4mConfig.firstLine = firstLine;
             y4mConfig.lastLine = lastLine;
             y4mConfig.frameIndexOffset = static_cast<std::size_t>(startFrame);
+            y4mConfig.chromaGain = chromaGain;
             outputState.y4mWriter = std::make_unique<Y4mNtscWriter>(metadata, y4mConfig, *y4mStream);
         }
         catch (const std::exception& e) {

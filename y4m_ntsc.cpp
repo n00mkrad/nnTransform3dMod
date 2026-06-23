@@ -73,6 +73,10 @@ bool loadLdJsonMetadata(const std::string& path, LdJsonMetadata& metadata, std::
         metadata.videoParameters.fieldHeight = getInt("fieldHeight");
         metadata.videoParameters.system = getString("system");
         metadata.videoParameters.sampleRate = getDouble("sampleRate");
+        if (vp.contains("chromaGain")) {
+            if (!vp["chromaGain"].is_number()) throw std::runtime_error("Missing/invalid numeric key: videoParameters.chromaGain");
+            metadata.videoParameters.chromaGain = vp["chromaGain"].get<double>();
+        }
         metadata.videoParameters.isWidescreen = getBool("isWidescreen");
 
         metadata.fields.clear();
@@ -171,7 +175,10 @@ Y4mNtscWriter::Y4mNtscWriter(const LdJsonMetadata& metadata_, const Y4mNtscConfi
     frameWidth = metadata.videoParameters.fieldWidth;
     frameHeight = (metadata.videoParameters.fieldHeight * 2) - 1;
     if (frameWidth <= 0 || frameHeight <= 0) throw std::runtime_error("Metadata contains invalid frame dimensions.");
-    if (metadata.videoParameters.white16bIre <= metadata.videoParameters.black16bIre) throw std::runtime_error("Metadata contains invalid black/white levels.");
+    const int black16bIre = config.levelsOverride ? config.black16bIreOverride : metadata.videoParameters.black16bIre;
+    const int white16bIre = config.levelsOverride ? config.white16bIreOverride : metadata.videoParameters.white16bIre;
+    if (white16bIre <= black16bIre) throw std::runtime_error("Resolved black/white levels are invalid.");
+    if (config.chromaGain < 0.0 || !std::isfinite(config.chromaGain)) throw std::runtime_error("Resolved chroma gain is invalid.");
 
     xStart = 0;
     xEnd = frameWidth;
@@ -188,8 +195,8 @@ Y4mNtscWriter::Y4mNtscWriter(const LdJsonMetadata& metadata_, const Y4mNtscConfi
     outputWidth = xEnd - xStart;
     outputHeight = yEnd - yStart;
 
-    yOffset = static_cast<double>(metadata.videoParameters.black16bIre);
-    yRange = static_cast<double>(metadata.videoParameters.white16bIre - metadata.videoParameters.black16bIre);
+    yOffset = static_cast<double>(black16bIre);
+    yRange = static_cast<double>(white16bIre - black16bIre);
     yScale = Y_SCALE / yRange;
     cbScale = (C_SCALE / (ONE_MINUS_Kb * kB)) / yRange;
     crScale = (C_SCALE / (ONE_MINUS_Kr * kR)) / yRange;
@@ -262,8 +269,8 @@ void Y4mNtscWriter::writeFrame(const std::vector<uint16_t>& lumaPlane, const std
         for (int outX = 0; outX < outputWidth; ++outX) {
             const double filteredI = convolve5Tap(lineI, outX);
             const double filteredQ = convolve5Tap(lineQ, outX);
-            const double u = (-rotateSin * filteredI) + (rotateCos * filteredQ);
-            const double v = (rotateCos * filteredI) + (rotateSin * filteredQ);
+            const double u = config.chromaGain * ((-rotateSin * filteredI) + (rotateCos * filteredQ));
+            const double v = config.chromaGain * ((rotateCos * filteredI) + (rotateSin * filteredQ));
             const std::size_t outIndex = static_cast<std::size_t>(outY) * static_cast<std::size_t>(outputWidth) + static_cast<std::size_t>(outX);
             cbPlane[outIndex] = mapUToLimited(u);
             crPlane[outIndex] = mapVToLimited(v);

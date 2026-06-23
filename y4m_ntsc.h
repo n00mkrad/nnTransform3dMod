@@ -23,6 +23,7 @@ struct LdJsonVideoParameters {
     int fieldHeight = 0;
     std::string system;
     double sampleRate = 0.0;
+    double chromaGain = -1.0;
     bool isWidescreen = false;
 };
 
@@ -34,11 +35,15 @@ struct LdJsonMetadata {
 struct Y4mNtscConfig {
     bool fullFrame = false;
     bool forceLimited = false;
+    bool levelsOverride = false;
+    int black16bIreOverride = 0;
+    int white16bIreOverride = 0;
     int activeVideoStartOverride = -1;
     int activeVideoEndOverride = -1;
     int firstLine = 40;
     int lastLine = 525;
     std::size_t frameIndexOffset = 0;
+    double chromaGain = 1.0;
 };
 
 bool loadLdJsonMetadata(const std::string& path, LdJsonMetadata& metadata, std::string& error);
