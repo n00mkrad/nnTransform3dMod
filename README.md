@@ -2,19 +2,20 @@
 
 Fork features compared to original implementation:
 - Built-in chroma decoder with the option to directly output YUV video to file or stdout (pipe)
+- TBC input can be read from stdin for streaming decode pipelines
 - TBC or raw video can also be piped out (only one pipe, so either specify Y/C or interleaving mode)
 - Automatic metadata loading from `.tbc.json` if available
 - Options to specify start/end frame numbers
 - Additional QoL stuff and more control via CLI arguments (e.g. specify location of metadata JSON or model file or set output lines/height)
 
 #### Basic Usage:  
-`nnTransform3D.exe [--out-mode tbc|raw_y|raw_yc|y4m] [--first-line <num>] [--out <path|->] [input.tbc]`
+`nnTransform3D.exe [--out-mode tbc|raw_y|raw_yc|y4m] [--first-line <num>] [--out <path|->] [input.tbc|-]`
 
 **Basic Example:** `nnTransform3D --out-mode y4m --first-line 42 --out decoded.y4m input.tbc`  
 -> Loads `input.tbc` along with the metadata (expected at `input.tbc.json`), with active image starting at line 42 with a default height of 480, outputs `decoded.y4m` which is raw/lossless YUV 4:4:4 16-bit, interlaced 760x480 video (exact width depends on metadata or CLI args).
 
 #### Full Usage:  
-`nnTransform3D.exe [--input <path>] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--full-frame] [--force-limited] [--levels <black:white|ntsc|ntscj>] [--chroma-gain <number>] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc]`
+`nnTransform3D.exe [--input <path|->] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--full-frame] [--force-limited] [--levels <black:white|ntsc|ntscj>] [--chroma-gain <number>] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc|-]`
 
 **Options:**  
 `--av-start`: Active video area start (in pixels, horizontal).  
@@ -25,7 +26,7 @@ Fork features compared to original implementation:
 `--out-mode`: Output mode, either `tbc`, `raw_y`, `raw_yc`, or `y4m`. Default: `tbc`.  
 `--tbc-pipe-mode`: TBC stdout layout for `--out-mode tbc`: `y`, `c`, `yc_alt`, or `yc_stack` (Luma, Chroma, Luma/Chroma alternating at 2x frame rate, Luma/Chroma stacked top-bottom). Requires `--out -`.  
 `--out`: Output path, or `-` for binary stdout. In TBC mode, `--out -` is only valid when `--tbc-pipe-mode` is set.  
-`--json`: Metadata JSON path. If omitted, `<input>.json` is used if present.  
+`--json`: Metadata JSON path. If omitted for file input, `<input>.json` is used if present. Required for Y4M output when input is stdin.
 `--full-frame`: For `raw_y`, `raw_yc`, and `y4m`, output full frame geometry including blanking regions.  
 `--force-limited`: For `y4m`, clamp all output samples to legal limited range (`Y` 16..235, `Cb/Cr` 16..240 in 8-bit-equivalent terms).
 `--levels`: For `y4m`, override metadata black/white scaling levels. Use `<black>:<white>` raw 16-bit `black16bIre` / `white16bIre` values, `ntsc` (`18048:51200`), or `ntscj` (`15360:51200`).
@@ -36,16 +37,38 @@ Fork features compared to original implementation:
 `-q`: Disable the progress message (`[Info] Processed n frames...`).  
 
 #### Advanced:  
-`--input`: Input TBC file. Explicit/keyword form of positional `[input.tbc]`.
+`--input`: Input TBC file, or `-` for binary stdin. Explicit/keyword form of positional `[input.tbc|-]`.
 `--model`: ONNX model path. Default: `chroma_net.onnx` in the executable directory or working directory.  
 `--gpu`: GPU index used for TensorRT and CUDA providers. Default: `0`.  
 `--trt_mpi`: TensorRT max partition iterations (`trt_max_partition_iterations`). Default: `1000`.  
 `--trt_mss`: TensorRT minimum subgraph size (`trt_min_subgraph_size`). Default: `1`.  
 
 
+### Piped TBC Input
+
+Use `--input -` or positional `-` to read headerless field-sequential TBC data from stdin. The stream must contain little-endian `uint16` samples with fixed NTSC geometry: two `910x263` fields per source frame, or exactly `957320` bytes per frame.
+
+- Input is consumed sequentially with one frame of temporal lookahead.
+- `--start-frame` discards preceding input frames and retains frame `start-frame - 1` as temporal pre-roll.
+- `--end-frame` is inclusive. The decoder reads one additional complete frame for lookahead when available and then stops without draining stdin.
+- Exact frame-boundary EOF is accepted. Empty input, an incomplete trailing frame, or EOF before a requested start/end frame returns an error.
+- Metadata is not auto-detected for stdin. Use `--json <path>` when metadata is needed; Y4M output requires it.
+- When file output is selected without `--out`, stdin-derived names are `stdin_Y.tbc`, `stdin_C.tbc`, `stdin_Y.raw`, `stdin_YC.raw`, or `stdin.y4m`.
+
+Examples:
+
+```bat
+producer.exe | nnTransform3D.exe --input - --out-mode raw_y --full-frame --out decoded.raw
+producer.exe | nnTransform3D.exe - --out-mode y4m --json input.tbc.json --out decoded.y4m
+producer.exe | nnTransform3D.exe --input - --out-mode raw_y --full-frame --out - | consumer.exe
+```
+
+Windows PowerShell 5.1 pipelines are not binary-safe and can alter raw stream bytes. Run binary pipelines through `cmd.exe` or connect native processes directly instead.
+
+
 ### Metadata and Active Video Area
 
-Metadata is attempted in all output modes from `--json` or auto-detected `<input>.json`.  
+For file input, metadata is attempted in all output modes from `--json` or auto-detected `<input>.json`. For stdin, metadata is only loaded from an explicit `--json` path.
 If metadata loads and `--av-start` / `--av-end` are not set, `activeVideoStart` / `activeVideoEnd` from JSON are used.  
 For `tbc`, `raw_y`, and `raw_yc`, missing/invalid metadata falls back to defaults (`132..896`) unless AV bounds are explicitly set.  
 For `y4m`, valid metadata is required.
@@ -86,6 +109,7 @@ nnTransform3D --input input.tbc --out-mode y4m --json tbc-example.json --full-fr
 ### Default TBC File Output
 
 Default output mode is `tbc`, which writes two files into the source directory: `input_Y.tbc` (luma) and `input_C.tbc` (chroma).
+For stdin input, the corresponding default names are `stdin_Y.tbc` and `stdin_C.tbc`.
 
 ### TBC Stdout Pipe Modes
 

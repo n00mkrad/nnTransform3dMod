@@ -220,23 +220,31 @@ inline int IDX3(int t, int y, int x, int _Nt, int _Ny, int _Nx) {
     return (t * _Ny * _Nx) + (y * _Nx) + x;
 }
 
-// --- File reading and interlacing ---   (--- 文件读取与交织 ---)
-bool readInterlacedFrame(std::ifstream& is, FrameBuffer& frame) {
-    std::vector<uint16_t> field0(FIELD_WIDTH * FIELD_HEIGHT);
-    std::vector<uint16_t> field1(FIELD_WIDTH * FIELD_HEIGHT);
+// --- Input reading and interlacing ---
+enum class FrameReadResult {
+    Complete,
+    EndOfStream,
+    Truncated
+};
 
-    // Try to read the first field   (尝试读取第一场)
-    if (!is.read(reinterpret_cast<char*>(field0.data()), field0.size() * sizeof(uint16_t))) {
-        std::cerr << " Failed to read Field 0! Either EOF reached or file is too small.\n";
-        return false;
-    }
-    // Try to read the second field   (尝试读取第二场)
-    if (!is.read(reinterpret_cast<char*>(field1.data()), field1.size() * sizeof(uint16_t))) {
-        std::cerr << " Failed to read Field 1! EOF reached while expecting second field.\n";
-        return false;
-    }
+// Read one complete field-sequential TBC frame without assuming the stream is seekable.
+FrameReadResult readTbcFrameSamples(std::istream& is, std::vector<uint16_t>& fields) {
+    fields.resize(FIELD_WIDTH * FIELD_HEIGHT * 2);
+    const std::streamsize frameBytes = static_cast<std::streamsize>(fields.size() * sizeof(uint16_t));
+    is.read(reinterpret_cast<char*>(fields.data()), frameBytes);
+    const std::streamsize bytesRead = is.gcount();
+    if (bytesRead == frameBytes) return FrameReadResult::Complete;
+    return bytesRead == 0 && is.eof() ? FrameReadResult::EndOfStream : FrameReadResult::Truncated;
+}
 
-    // Interlace into frame (Even/Odd Lines)   (交织为帧 (Even/Odd Lines))
+FrameReadResult readInterlacedFrame(std::istream& is, FrameBuffer& frame) {
+    std::vector<uint16_t> fields;
+    FrameReadResult readResult = readTbcFrameSamples(is, fields);
+    if (readResult != FrameReadResult::Complete) return readResult;
+    const uint16_t* field0 = fields.data();
+    const uint16_t* field1 = fields.data() + (FIELD_WIDTH * FIELD_HEIGHT);
+
+    // Interlace the two source fields into one frame.
     for (int y = 0; y < FIELD_HEIGHT; ++y) {
         if (y * 2 < FRAME_HEIGHT) {
             std::copy(&field0[y * FIELD_WIDTH], &field0[(y + 1) * FIELD_WIDTH], &frame.cvbs[y * 2 * FRAME_WIDTH]);
@@ -245,7 +253,7 @@ bool readInterlacedFrame(std::ifstream& is, FrameBuffer& frame) {
             std::copy(&field1[y * FIELD_WIDTH], &field1[(y + 1) * FIELD_WIDTH], &frame.cvbs[(y * 2 + 1) * FRAME_WIDTH]);
         }
     }
-    return true;
+    return FrameReadResult::Complete;
 }
 
 // --- Core 3D filter ---   (--- 核心 3D 滤镜 ---)
@@ -687,7 +695,7 @@ bool resolveModelPath(const char* argv0, const std::string& modelPathArg, bool m
 }
 
 void printUsage(const char* exeName) {
-    std::cerr << "Usage: " << exeName << " [--input <path>] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--full-frame] [--force-limited] [--levels <black:white|ntsc|ntscj>] [--chroma-gain <number>] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc]\n";
+    std::cerr << "Usage: " << exeName << " [--input <path|->] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--full-frame] [--force-limited] [--levels <black:white|ntsc|ntscj>] [--chroma-gain <number>] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc|-]\n";
     std::cerr << "Defaults: --out-mode tbc, --gpu 0, --trt_mpi 1000, --trt_mss 1, --start-frame 0, --end-frame 0, --av-start 132, --av-end 896, --lines 480\n";
 }
 
@@ -1156,6 +1164,7 @@ int main(int argc, char** argv) {
         printUsage(argv[0]);
         return -1;
     }
+    const bool readInputFromStdin = (inFile == "-");
 
     LdJsonMetadata metadata;
     std::string metadataPathResolved;
@@ -1204,8 +1213,13 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    metadataPathResolved = jsonSpecified ? jsonPath : (inFile + ".json");
-    if (loadLdJsonMetadata(metadataPathResolved, metadata, metadataError)) {
+    if (readInputFromStdin && outputMode == OutputMode::Y4m && !jsonSpecified) {
+        std::cerr << "[Error] --json <path> is required for Y4M output when TBC input is read from stdin.\n";
+        return -1;
+    }
+
+    metadataPathResolved = jsonSpecified ? jsonPath : (readInputFromStdin ? "" : inFile + ".json");
+    if (!metadataPathResolved.empty() && loadLdJsonMetadata(metadataPathResolved, metadata, metadataError)) {
         metadataLoaded = true;
         if (!avStartSpecified) activeVideoStart = metadata.videoParameters.activeVideoStart;
         if (!avEndSpecified) activeVideoEnd = metadata.videoParameters.activeVideoEnd;
@@ -1253,7 +1267,7 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    std::string baseName = inFile.substr(0, inFile.find_last_of('.'));
+    std::string baseName = readInputFromStdin ? "stdin" : inFile.substr(0, inFile.find_last_of('.'));
     std::string lumaFile = baseName + "_Y.tbc";
     std::string chromaFile = baseName + "_C.tbc";
     if (!outPathSpecified) {
@@ -1268,14 +1282,19 @@ int main(int argc, char** argv) {
     std::ostream& log = std::cerr;
 
 #ifdef _WIN32
+    if (readInputFromStdin && _setmode(_fileno(stdin), _O_BINARY) == -1) {
+        std::cerr << "[Error] Failed to switch stdin to binary mode for piped input.\n";
+        return -1;
+    }
     if ((writeRawToStdout || writeTbcPipeToStdout || writeY4mToStdout) && _setmode(_fileno(stdout), _O_BINARY) == -1) {
         std::cerr << "[Error] Failed to switch stdout to binary mode for piped output.\n";
         return -1;
     }
 #endif
 
-    log << "Target Input File: " << inFile << "\n";
-    log << "Metadata Input: " << metadataPathResolved << (metadataLoaded ? " (loaded)\n" : " (not loaded, using defaults)\n");
+    log << "Target Input: " << (readInputFromStdin ? "stdin (-)" : inFile) << "\n";
+    if (metadataPathResolved.empty()) log << "Metadata Input: not specified (using defaults)\n";
+    else log << "Metadata Input: " << metadataPathResolved << (metadataLoaded ? " (loaded)\n" : " (not loaded, using defaults)\n");
     if (!metadataLoaded && !metadataError.empty()) {
         log << "Metadata Load Note: " << metadataError << "\n";
     }
@@ -1314,64 +1333,89 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::ifstream is(inFile, std::ios::binary);
-    if (!is.is_open()) {
-        std::cerr << "[Error] Cannot open input file! Check if the file exists and is not locked.\n";
-        return -1;
-    }
-
-    // Check file size
-    is.seekg(0, std::ios::end);
-    long long fileSize = is.tellg();
-    log << "File opened successfully. Size: " << formatMiB(fileSize) << ".\n";
-
     // Calculate the number of bytes needed for one frame: 910 * 263 * 2 fields * 2 bytes (uint16)
     const long long frameBytes = FIELD_WIDTH * FIELD_HEIGHT * 2 * 2;
-    log << "Bytes required for ONE frame: " << formatMiB(frameBytes) << ".\n";
-    if (fileSize < 0) {
-        std::cerr << "[Error] Failed to determine input file size.\n";
-        return -1;
-    }
     if (frameBytes <= 0) {
         std::cerr << "[Error] Invalid frame byte size configuration.\n";
         return -1;
     }
-
-    const long long totalFramesAvailable = fileSize / frameBytes;
-    if (totalFramesAvailable <= 0) {
-        std::cerr << "[Error] File is too small to contain even ONE frame!\n";
-        return -1;
-    }
-    if (startFrame >= totalFramesAvailable) {
-        std::cerr << "[Error] --start-frame " << startFrame << " is out of range. Available frame indices: 0.." << (totalFramesAvailable - 1) << ".\n";
-        return -1;
-    }
     const bool limitEndFrame = endFrameSpecified && endFrame > 0;
-    if (limitEndFrame && endFrame >= totalFramesAvailable) {
-        std::cerr << "[Error] --end-frame " << endFrame << " is out of range. Available frame indices: 0.." << (totalFramesAvailable - 1) << ".\n";
-        return -1;
-    }
     if (limitEndFrame && endFrame < startFrame) {
         std::cerr << "[Error] --end-frame must be greater than or equal to --start-frame when both are active.\n";
         return -1;
     }
-
     const long long decodeStartFrame = (startFrame > 0) ? static_cast<long long>(startFrame - 1) : 0LL;
-    if (decodeStartFrame > (std::numeric_limits<long long>::max() / frameBytes)) {
-        std::cerr << "[Error] --start-frame produced an overflow while computing byte offset.\n";
-        return -1;
-    }
-    const long long decodeStartByteOffset = decodeStartFrame * frameBytes;
-    is.clear();
-    is.seekg(static_cast<std::streamoff>(decodeStartByteOffset), std::ios::beg); // Seek to requested decode start.
-    if (!is.good()) {
-        std::cerr << "[Error] Failed to seek to requested --start-frame position.\n";
-        return -1;
+    const bool suppressPreRollOutput = (startFrame > 0);
+    std::ifstream inputFile;
+    std::istream* inputStream = nullptr;
+    long long totalFramesAvailable = -1;
+
+    if (readInputFromStdin) {
+        inputStream = &std::cin;
+        log << "Reading field-sequential TBC input from stdin.\n";
+    } else {
+        inputFile.open(inFile, std::ios::binary);
+        if (!inputFile.is_open()) {
+            std::cerr << "[Error] Cannot open input file! Check if the file exists and is not locked.\n";
+            return -1;
+        }
+
+        // File input supports size validation and direct seeking to the pre-roll frame.
+        inputFile.seekg(0, std::ios::end);
+        const long long fileSize = inputFile.tellg();
+        log << "File opened successfully. Size: " << formatMiB(fileSize) << ".\n";
+        if (fileSize < 0) {
+            std::cerr << "[Error] Failed to determine input file size.\n";
+            return -1;
+        }
+        totalFramesAvailable = fileSize / frameBytes;
+        if (totalFramesAvailable <= 0) {
+            std::cerr << "[Error] File is too small to contain even ONE frame!\n";
+            return -1;
+        }
+        if (startFrame >= totalFramesAvailable) {
+            std::cerr << "[Error] --start-frame " << startFrame << " is out of range. Available frame indices: 0.." << (totalFramesAvailable - 1) << ".\n";
+            return -1;
+        }
+        if (limitEndFrame && endFrame >= totalFramesAvailable) {
+            std::cerr << "[Error] --end-frame " << endFrame << " is out of range. Available frame indices: 0.." << (totalFramesAvailable - 1) << ".\n";
+            return -1;
+        }
+        if (decodeStartFrame > (std::numeric_limits<long long>::max() / frameBytes)) {
+            std::cerr << "[Error] --start-frame produced an overflow while computing byte offset.\n";
+            return -1;
+        }
+        const long long decodeStartByteOffset = decodeStartFrame * frameBytes;
+        inputFile.clear();
+        inputFile.seekg(static_cast<std::streamoff>(decodeStartByteOffset), std::ios::beg);
+        if (!inputFile.good()) {
+            std::cerr << "[Error] Failed to seek to requested --start-frame position.\n";
+            return -1;
+        }
+        inputStream = &inputFile;
     }
 
-    const bool suppressPreRollOutput = (startFrame > 0);
-    log << "Input Frames Available: " << totalFramesAvailable << "\n";
-    log << "Frames: " << startFrame << "-" << (limitEndFrame ? endFrame : (totalFramesAvailable - 1)) << ((startFrameSpecified || endFrameSpecified) ? " (zero-indexed)\n" : " (all)\n");
+    log << "Bytes required for ONE frame: " << formatMiB(frameBytes) << ".\n";
+    if (readInputFromStdin && decodeStartFrame > 0) {
+        // Sequential streams reach the pre-roll position by consuming earlier frames.
+        std::vector<uint16_t> skippedFrameSamples;
+        for (long long skippedFrame = 0; skippedFrame < decodeStartFrame; ++skippedFrame) {
+            FrameReadResult skipResult = readTbcFrameSamples(*inputStream, skippedFrameSamples);
+            if (skipResult == FrameReadResult::Complete) continue;
+            if (skipResult == FrameReadResult::Truncated) std::cerr << "[Error] Piped TBC input was truncated while skipping to --start-frame " << startFrame << ".\n";
+            else std::cerr << "[Error] Piped TBC input ended before --start-frame " << startFrame << " could be reached.\n";
+            return -1;
+        }
+        log << "Discarded " << decodeStartFrame << " input frames before the temporal pre-roll frame.\n";
+    }
+
+    if (readInputFromStdin) {
+        log << "Input Frames Available: unknown (stdin)\n";
+        log << "Frames: " << startFrame << "-" << (limitEndFrame ? std::to_string(endFrame) : "end of stream") << ((startFrameSpecified || endFrameSpecified) ? " (zero-indexed)\n" : " (all)\n");
+    } else {
+        log << "Input Frames Available: " << totalFramesAvailable << "\n";
+        log << "Frames: " << startFrame << "-" << (limitEndFrame ? endFrame : (totalFramesAvailable - 1)) << ((startFrameSpecified || endFrameSpecified) ? " (zero-indexed)\n" : " (all)\n");
+    }
 
     OutputState outputState;
     outputState.mode = outputMode;
@@ -1513,9 +1557,16 @@ int main(int argc, char** argv) {
     // --- 1. Startup phase (LookBehind) ---
     log << "Entering Phase 1: LookBehind (Reading first frame)...\n";
     frame0.isPadding = true;
-    if (!readInterlacedFrame(is, frame1)) {
-        std::cerr << "[Error] Failed at initial frame read. Exiting.\n";
-        return 0;
+    FrameReadResult initialReadResult = readInterlacedFrame(*inputStream, frame1);
+    if (initialReadResult != FrameReadResult::Complete) {
+        if (initialReadResult == FrameReadResult::Truncated) {
+            std::cerr << "[Error] TBC input was truncated while reading the initial frame.\n";
+        } else if (startFrame > 0) {
+            std::cerr << "[Error] TBC input ended before --start-frame " << startFrame << " could be reached.\n";
+        } else {
+            std::cerr << "[Error] TBC input contains no complete frames.\n";
+        }
+        return -1;
     }
     // Send the newly read first frame into GPU
     cudaMemcpy(frame1.d_cvbs, frame1.cvbs.data(), FRAME_WIDTH * FRAME_HEIGHT * sizeof(uint16_t), cudaMemcpyHostToDevice);
@@ -1533,7 +1584,15 @@ int main(int argc, char** argv) {
     int emittedFrameCount = 0;
     long long currentOutputFrameIndex = decodeStartFrame;
     bool endFrameReachedWithLookahead = false;
-    while (readInterlacedFrame(is, frame1)) {
+    bool truncatedInput = false;
+    bool processingFailed = false;
+    while (true) {
+        FrameReadResult readResult = readInterlacedFrame(*inputStream, frame1);
+        if (readResult != FrameReadResult::Complete) {
+            truncatedInput = (readResult == FrameReadResult::Truncated);
+            if (truncatedInput) std::cerr << "[Error] TBC input ended with an incomplete trailing frame.\n";
+            break;
+        }
         decodedFrameCount++;
         try {
             // Immediately send to GPU upon reading each frame
@@ -1558,6 +1617,7 @@ int main(int argc, char** argv) {
         catch (const std::exception& e) {
             std::cerr << "\n[Fatal Crash at Decode Frame " << decodedFrameCount << "] " << e.what() << "\n";
             std::cerr << "Emergency saving and exiting...\n";
+            processingFailed = true;
             break;
         }
 
@@ -1571,7 +1631,9 @@ int main(int argc, char** argv) {
     }
 
     // --- 3. Finalization phase (LookAhead) ---
-    if (endFrameReachedWithLookahead) {
+    if (processingFailed) {
+        log << "Skipping final padding phase after processing failure.\n";
+    } else if (endFrameReachedWithLookahead) {
         log << "End frame reached with real lookahead; skipping final padding phase.\n";
     } else {
         log << "Entering Phase 3: LookAhead (Finalizing last frame)...\n";
@@ -1589,6 +1651,12 @@ int main(int argc, char** argv) {
         }
     }
 
+    bool requestedRangeIncomplete = readInputFromStdin && !processingFailed && !endFrameReachedWithLookahead && ((startFrame > 0 && currentOutputFrameIndex < startFrame) || (limitEndFrame && currentOutputFrameIndex < endFrame));
+    if (requestedRangeIncomplete) {
+        if (currentOutputFrameIndex < startFrame) std::cerr << "[Error] Piped TBC input ended before --start-frame " << startFrame << " could produce an output frame.\n";
+        else std::cerr << "[Error] Piped TBC input ended before requested --end-frame " << endFrame << ". Last complete source frame index: " << currentOutputFrameIndex << ".\n";
+    }
+
     log << "All Done! Total decode frames: " << decodedFrameCount << ", emitted frames: " << emittedFrameCount << "\n";
-    return 0;
+    return (processingFailed || truncatedInput || requestedRangeIncomplete) ? -1 : 0;
 }
