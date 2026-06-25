@@ -52,6 +52,7 @@ struct Y4mNtscConfig {
 };
 
 bool loadLdJsonMetadata(const std::string& path, LdJsonMetadata& metadata, std::string& error, bool ignoreFields = false);
+void initializeDefaultNtscMetadata(LdJsonMetadata& metadata);
 bool appendGeneratedFieldMetadata(LdJsonMetadata& metadata, std::size_t fieldCount, std::string& error);
 
 class Y4mNtscWriter {

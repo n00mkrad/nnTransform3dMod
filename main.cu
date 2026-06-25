@@ -695,7 +695,7 @@ bool resolveModelPath(const char* argv0, const std::string& modelPathArg, bool m
 }
 
 void printUsage(const char* exeName) {
-    std::cerr << "Usage: " << exeName << " [--input <path|->] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--no-field-meta] [--full-frame] [--force-limited] [--levels <black:white|ntsc|ntscj>] [--chroma-gain <number>] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc|-]\n";
+    std::cerr << "Usage: " << exeName << " [--input <path|->] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--no-meta] [--no-field-meta] [--full-frame] [--force-limited] [--levels <black:white|ntsc|ntscj>] [--chroma-gain <number>] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc|-]\n";
     std::cerr << "Defaults: --out-mode tbc, --gpu 0, --trt_mpi 1000, --trt_mss 1, --start-frame 0, --end-frame 0, --av-start 132, --av-end 896, --lines 480\n";
 }
 
@@ -790,6 +790,7 @@ int main(int argc, char** argv) {
     bool widthSpecified = false;
     std::string jsonPath;
     bool jsonSpecified = false;
+    bool noMeta = false;
     bool noFieldMeta = false;
     std::string outPath;
     bool outPathSpecified = false;
@@ -1046,6 +1047,9 @@ int main(int argc, char** argv) {
         else if (arg == "--no-field-meta") {
             noFieldMeta = true;
         }
+        else if (arg == "--no-meta") {
+            noMeta = true;
+        }
         else if (arg == "--full-frame") {
             fullFrame = true;
         }
@@ -1169,6 +1173,7 @@ int main(int argc, char** argv) {
         return -1;
     }
     const bool readInputFromStdin = (inFile == "-");
+    const bool generatedFieldMetadata = noMeta || noFieldMeta;
 
     LdJsonMetadata metadata;
     std::string metadataPathResolved;
@@ -1217,14 +1222,25 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    if (readInputFromStdin && outputMode == OutputMode::Y4m && !jsonSpecified) {
+    if (noMeta && jsonSpecified) {
+        std::cerr << "[Error] --no-meta cannot be combined with --json.\n";
+        printUsage(argv[0]);
+        return -1;
+    }
+
+    if (readInputFromStdin && outputMode == OutputMode::Y4m && !jsonSpecified && !noMeta) {
         std::cerr << "[Error] --json <path> is required for Y4M output when TBC input is read from stdin.\n";
         return -1;
     }
 
-    metadataPathResolved = jsonSpecified ? jsonPath : (readInputFromStdin ? "" : inFile + ".json");
-    if (!metadataPathResolved.empty() && loadLdJsonMetadata(metadataPathResolved, metadata, metadataError, noFieldMeta)) {
+    if (noMeta) {
+        initializeDefaultNtscMetadata(metadata);
         metadataLoaded = true;
+    } else {
+        metadataPathResolved = jsonSpecified ? jsonPath : (readInputFromStdin ? "" : inFile + ".json");
+        if (!metadataPathResolved.empty() && loadLdJsonMetadata(metadataPathResolved, metadata, metadataError, noFieldMeta)) metadataLoaded = true;
+    }
+    if (metadataLoaded) {
         if (!avStartSpecified) activeVideoStart = metadata.videoParameters.activeVideoStart;
         if (!avEndSpecified) activeVideoEnd = metadata.videoParameters.activeVideoEnd;
         if (!chromaGainSpecified && metadata.videoParameters.chromaGain >= 0.0) chromaGain = metadata.videoParameters.chromaGain;
@@ -1297,9 +1313,10 @@ int main(int argc, char** argv) {
 #endif
 
     log << "Target Input: " << (readInputFromStdin ? "stdin (-)" : inFile) << "\n";
-    if (metadataPathResolved.empty()) log << "Metadata Input: not specified (using defaults)\n";
+    if (noMeta) log << "Metadata Input: built-in NTSC defaults (generated)\n";
+    else if (metadataPathResolved.empty()) log << "Metadata Input: not specified (using defaults)\n";
     else log << "Metadata Input: " << metadataPathResolved << (metadataLoaded ? " (loaded)\n" : " (not loaded, using defaults)\n");
-    if (noFieldMeta && readInputFromStdin) log << "Field Metadata: generated incrementally from successfully read stdin frames.\n";
+    if (generatedFieldMetadata && readInputFromStdin) log << "Field Metadata: generated incrementally from successfully read stdin frames.\n";
     if (!metadataLoaded && !metadataError.empty()) {
         log << "Metadata Load Note: " << metadataError << "\n";
     }
@@ -1322,7 +1339,7 @@ int main(int argc, char** argv) {
         log << "Output Mode: Y4M to " << (writeY4mToStdout ? "stdout" : outPath) << "\n";
         log << "Frame Area: " << (fullFrame ? "full" : "active") << "\n";
         log << "Force Limited Range: " << (forceLimited ? "Yes (Clip)" : "No (Allow headroom/footroom)") << "\n";
-        log << "Levels: black " << (levelsSpecified ? black16bIreOverride : metadata.videoParameters.black16bIre) << ", white " << (levelsSpecified ? white16bIreOverride : metadata.videoParameters.white16bIre) << (levelsSpecified ? (levelsPresetLabel.empty() ? "\n" : " (" + levelsPresetLabel + ")\n") : " (metadata)\n");
+        log << "Levels: black " << (levelsSpecified ? black16bIreOverride : metadata.videoParameters.black16bIre) << ", white " << (levelsSpecified ? white16bIreOverride : metadata.videoParameters.white16bIre) << (levelsSpecified ? (levelsPresetLabel.empty() ? "\n" : " (" + levelsPresetLabel + ")\n") : (noMeta ? " (built-in NTSC)\n" : " (metadata)\n"));
         log << "Chroma Gain: " << chromaGain << ((!chromaGainSpecified && metadata.videoParameters.chromaGain >= 0.0) ? " (metadata)\n" : "\n");
         if (!fullFrame) {
             log << "Lines: " << (lastLine - firstLine) << " (" << firstLine << " to " << lastLine << ")\n";
@@ -1378,7 +1395,7 @@ int main(int argc, char** argv) {
             std::cerr << "[Error] File is too small to contain even ONE frame!\n";
             return -1;
         }
-        if (noFieldMeta) {
+        if (generatedFieldMetadata) {
             // File inputs can generate the complete absolute field timeline before decoding starts.
             const unsigned long long totalFramesUnsigned = static_cast<unsigned long long>(totalFramesAvailable);
             if (totalFramesUnsigned > static_cast<unsigned long long>(std::numeric_limits<std::size_t>::max() / 2)) {
@@ -1421,7 +1438,7 @@ int main(int argc, char** argv) {
         for (long long skippedFrame = 0; skippedFrame < decodeStartFrame; ++skippedFrame) {
             FrameReadResult skipResult = readTbcFrameSamples(*inputStream, skippedFrameSamples);
             if (skipResult == FrameReadResult::Complete) {
-                if (noFieldMeta) {
+                if (generatedFieldMetadata) {
                     // Preserve absolute field numbering for frames consumed before temporal pre-roll.
                     std::string generatedFieldMetadataError;
                     if (!appendGeneratedFieldMetadata(metadata, 2, generatedFieldMetadataError)) {
@@ -1479,7 +1496,7 @@ int main(int argc, char** argv) {
             Y4mNtscConfig y4mConfig;
             y4mConfig.fullFrame = fullFrame;
             y4mConfig.forceLimited = forceLimited;
-            y4mConfig.generatedFieldMetadata = noFieldMeta;
+            y4mConfig.generatedFieldMetadata = generatedFieldMetadata;
             y4mConfig.levelsOverride = levelsSpecified;
             y4mConfig.black16bIreOverride = black16bIreOverride;
             y4mConfig.white16bIreOverride = white16bIreOverride;
@@ -1598,7 +1615,7 @@ int main(int argc, char** argv) {
         }
         return -1;
     }
-    if (noFieldMeta && readInputFromStdin) {
+    if (generatedFieldMetadata && readInputFromStdin) {
         // Stdin metadata grows only after a complete source frame has been accepted.
         std::string generatedFieldMetadataError;
         if (!appendGeneratedFieldMetadata(metadata, 2, generatedFieldMetadataError)) {
@@ -1631,7 +1648,7 @@ int main(int argc, char** argv) {
             if (truncatedInput) std::cerr << "[Error] TBC input ended with an incomplete trailing frame.\n";
             break;
         }
-        if (noFieldMeta && readInputFromStdin) {
+        if (generatedFieldMetadata && readInputFromStdin) {
             // Include real lookahead frames so generated metadata mirrors every consumed source frame.
             std::string generatedFieldMetadataError;
             if (!appendGeneratedFieldMetadata(metadata, 2, generatedFieldMetadataError)) {
@@ -1705,6 +1722,6 @@ int main(int argc, char** argv) {
     }
 
     log << "All Done! Total decode frames: " << decodedFrameCount << ", emitted frames: " << emittedFrameCount << "\n";
-    if (noFieldMeta && readInputFromStdin) log << "Generated Field Metadata Entries: " << metadata.fields.size() << "\n";
+    if (generatedFieldMetadata && readInputFromStdin) log << "Generated Field Metadata Entries: " << metadata.fields.size() << "\n";
     return (processingFailed || truncatedInput || requestedRangeIncomplete) ? -1 : 0;
 }

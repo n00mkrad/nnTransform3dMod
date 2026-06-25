@@ -15,7 +15,7 @@ Fork features compared to original implementation:
 -> Loads `input.tbc` along with the metadata (expected at `input.tbc.json`), with active image starting at line 42 with a default height of 480, outputs `decoded.y4m` which is raw/lossless YUV 4:4:4 16-bit, interlaced 760x480 video (exact width depends on metadata or CLI args).
 
 #### Full Usage:  
-`nnTransform3D.exe [--input <path|->] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--no-field-meta] [--full-frame] [--force-limited] [--levels <black:white|ntsc|ntscj>] [--chroma-gain <number>] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc|-]`
+`nnTransform3D.exe [--input <path|->] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--no-meta] [--no-field-meta] [--full-frame] [--force-limited] [--levels <black:white|ntsc|ntscj>] [--chroma-gain <number>] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc|-]`
 
 **Options:**  
 `--av-start`: Active video area start (in pixels, horizontal).  
@@ -26,8 +26,9 @@ Fork features compared to original implementation:
 `--out-mode`: Output mode, either `tbc`, `raw_y`, `raw_yc`, or `y4m`. Default: `tbc`.  
 `--tbc-pipe-mode`: TBC stdout layout for `--out-mode tbc`: `y`, `c`, `yc_alt`, or `yc_stack` (Luma, Chroma, Luma/Chroma alternating at 2x frame rate, Luma/Chroma stacked top-bottom). Requires `--out -`.  
 `--out`: Output path, or `-` for binary stdout. In TBC mode, `--out -` is only valid when `--tbc-pipe-mode` is set.  
-`--json`: Metadata JSON path. If omitted for file input, `<input>.json` is used if present. Required for Y4M output when input is stdin.
-`--no-field-meta`: Ignore JSON `fields` and generate field metadata in memory using repeating phase IDs `1..4`, alternating first-field flags, and absolute field sequence numbers. Allows metadata JSON without a `fields` array.
+`--json`: Metadata JSON path, defaults to `<input>.json` for file input. Required for Y4M output when input is stdin unless `--no-meta` is used.
+`--no-meta`: Ignore any existing metadata files and construct built-in NTSC metadata and field entries on runtime. Cannot be combined with `--json`; combining it with `--no-field-meta` is allowed but redundant.
+`--no-field-meta`: Ignore `fields` metadata and generate generic metadata on runtime. Allows metadata JSON without a `fields` array; all other metadata is still loaded from the file.
 `--full-frame`: For `raw_y`, `raw_yc`, and `y4m`, output full frame geometry including blanking regions.  
 `--force-limited`: For `y4m`, clamp all output samples to legal limited range (`Y` 16..235, `Cb/Cr` 16..240 in 8-bit-equivalent terms).
 `--levels`: For `y4m`, override metadata black/white scaling levels. Use `<black>:<white>` raw 16-bit `black16bIre` / `white16bIre` values, `ntsc` (`18048:51200`), or `ntscj` (`15360:51200`).
@@ -53,8 +54,7 @@ Use `--input -` or positional `-` to read headerless field-sequential TBC data f
 - `--start-frame` discards preceding input frames and retains frame `start-frame - 1` as temporal pre-roll.
 - `--end-frame` is inclusive. The decoder reads one additional complete frame for lookahead when available and then stops without draining stdin.
 - Exact frame-boundary EOF is accepted. Empty input, an incomplete trailing frame, or EOF before a requested start/end frame returns an error.
-- Metadata is not auto-detected for stdin. Use `--json <path>` when metadata is needed; Y4M output requires it.
-- With `--no-field-meta`, two field entries are generated after every successfully read stdin frame, including skipped, pre-roll, and lookahead frames.
+- Metadata is not auto-detected for stdin. Y4M output requires `--json <path>` or `--no-meta`.
 - When file output is selected without `--out`, stdin-derived names are `stdin_Y.tbc`, `stdin_C.tbc`, `stdin_Y.raw`, `stdin_YC.raw`, or `stdin.y4m`.
 
 Examples:
@@ -73,8 +73,9 @@ Windows PowerShell 5.1 pipelines are not binary-safe and can alter raw stream by
 For file input, metadata is attempted in all output modes from `--json` or auto-detected `<input>.json`. For stdin, metadata is only loaded from an explicit `--json` path.
 If metadata loads and `--av-start` / `--av-end` are not set, `activeVideoStart` / `activeVideoEnd` from JSON are used.  
 For `tbc`, `raw_y`, and `raw_yc`, missing/invalid metadata falls back to defaults (`132..896`) unless AV bounds are explicitly set.  
-For `y4m`, valid metadata is required.
-With `--no-field-meta`, the JSON `fields` value is not inspected or validated. File input generates entries for every complete frame in the file before decoding, regardless of `--start-frame` or `--end-frame`; stdin generates entries incrementally. Generated metadata remains in memory and is never written to JSON.
+For `y4m`, valid JSON metadata is required unless `--no-meta` is used.
+With `--no-field-meta`, the JSON `fields` array is ignored. File input pre-generates entries for every frame before decoding; stdin generates entries incrementally. **Generated metadata is only used in-memory and is never written to disk.** This applies to `--no-meta` as well.
+With `--no-meta`, no sidecar is opened. Built-in NTSC metadata uses active area `147..905`, black/white levels `18048..51200`, burst area `92..128`, `910x263` field geometry, sample rate `14318181.81818182`, system `NTSC`, and 4:3 output. CLI active-area, level, and chroma-gain options retain precedence. This mode includes the behavior of `--no-field-meta`, passing both flags is not needed.
 
 Range derivation precedence:
 - `--av-end` overrides `--width`.
@@ -84,10 +85,10 @@ Range derivation precedence:
 ### Y4M Output Mode
 
 - `--out-mode y4m` writes YUV4MPEG2 `YUV444P16` limited-range frames. By default, nominal levels are limited-range while headroom/footroom samples are preserved.
-- `--force-limited` clips all Y4M pixels to legal limited range (`Y` 16..235, `Cb/Cr` 16..240 in 8-bit-equivalent terms).
+- `--force-limited` clips all Y4M pixels to limited range (`Y` 16..235, `Cb/Cr` 16..240 in 8-bit-equivalent terms).
 - `--levels` overrides the Y4M luma/chroma scaling reference levels from metadata. The custom form uses raw 16-bit `black16bIre` / `white16bIre` values, not 8-bit video code values.
-- `--chroma-gain` applies chroma saturation gain after Y/C separation and before Y4M chroma mapping. CLI values override metadata `videoParameters.chromaGain`; default is `1.0`.
-- Video is merged from separated luma and chroma using minimal `mono`/`ntsc1d` decoders. More advanced comb filters are not needed as Y/C is already cleanly separated by the neural network.
+- `--chroma-gain` applies chroma saturation gain after Y/C separation and before Y4M chroma mapping. Overrides `videoParameters.chromaGain` metadata; default is `1.0` (neutral).
+- Video is merged from separated luma and chroma using minimal `mono`/`ntsc1d` decoders. More advanced comb filters are not needed as Y/C separation is done by the neural network.
 - `--start-frame` keeps Y4M phase continuity aligned to absolute source-frame position.
 - Default is active-area output, using horizontal metadata bounds (or CLI overrides) and `--first-line` / `--last-line`.
 - `--full-frame` outputs full metadata geometry (`fieldWidth x ((fieldHeight * 2) - 1)`).
@@ -98,6 +99,9 @@ Examples:
 ```bash
 # Default Y4M file output (auto metadata from input.tbc.json)
 nnTransform3D --input input.tbc --out-mode y4m
+
+# Y4M output using built-in NTSC metadata without a sidecar
+nnTransform3D --input input.tbc --out-mode y4m --no-meta
 
 # Explicit metadata file and active-area output to stdout using first-line + lines
 nnTransform3D --input input.tbc --out-mode y4m --json tbc-example.json --first-line 40 --lines 480 --out - > output.y4m

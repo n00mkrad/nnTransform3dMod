@@ -108,6 +108,23 @@ bool loadLdJsonMetadata(const std::string& path, LdJsonMetadata& metadata, std::
     }
 }
 
+void initializeDefaultNtscMetadata(LdJsonMetadata& metadata) {
+    // Construct the metadata required for fixed-geometry NTSC decoding without a JSON sidecar.
+    metadata.videoParameters.activeVideoStart = 147;
+    metadata.videoParameters.activeVideoEnd = 905;
+    metadata.videoParameters.black16bIre = 18048;
+    metadata.videoParameters.white16bIre = 51200;
+    metadata.videoParameters.colourBurstStart = 92;
+    metadata.videoParameters.colourBurstEnd = 128;
+    metadata.videoParameters.fieldWidth = 910;
+    metadata.videoParameters.fieldHeight = 263;
+    metadata.videoParameters.system = "NTSC";
+    metadata.videoParameters.sampleRate = 14318181.81818182;
+    metadata.videoParameters.chromaGain = -1.0;
+    metadata.videoParameters.isWidescreen = false;
+    metadata.fields.clear();
+}
+
 bool appendGeneratedFieldMetadata(LdJsonMetadata& metadata, std::size_t fieldCount, std::string& error) {
     if (fieldCount == 0) return true;
     // Generated sequence numbers are absolute field indices and must remain representable by the metadata type.
