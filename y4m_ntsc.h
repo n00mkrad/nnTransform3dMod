@@ -7,9 +7,13 @@
 #include <vector>
 
 struct LdJsonFieldMeta {
+    int audioSamples = 0;
     int fieldPhaseID = 0;
     bool isFirstField = false;
+    int medianBurstIRE = 20;
+    bool pad = false;
     int seqNo = 0;
+    int syncConf = 100;
 };
 
 struct LdJsonVideoParameters {
@@ -35,6 +39,7 @@ struct LdJsonMetadata {
 struct Y4mNtscConfig {
     bool fullFrame = false;
     bool forceLimited = false;
+    bool generatedFieldMetadata = false;
     bool levelsOverride = false;
     int black16bIreOverride = 0;
     int white16bIreOverride = 0;
@@ -46,7 +51,8 @@ struct Y4mNtscConfig {
     double chromaGain = 1.0;
 };
 
-bool loadLdJsonMetadata(const std::string& path, LdJsonMetadata& metadata, std::string& error);
+bool loadLdJsonMetadata(const std::string& path, LdJsonMetadata& metadata, std::string& error, bool ignoreFields = false);
+bool appendGeneratedFieldMetadata(LdJsonMetadata& metadata, std::size_t fieldCount, std::string& error);
 
 class Y4mNtscWriter {
 public:
@@ -66,7 +72,7 @@ private:
     uint16_t mapVToLimited(double v) const;
     double convolve5Tap(const std::vector<double>& data, int index) const;
 
-    LdJsonMetadata metadata;
+    const LdJsonMetadata* metadata = nullptr;
     Y4mNtscConfig config;
     std::ostream* output = nullptr;
     std::vector<int> phaseCycle;

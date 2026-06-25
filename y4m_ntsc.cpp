@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
@@ -32,7 +33,7 @@ static constexpr double ROTATE_DEGREES = 33.0;
 static constexpr double PI_D = 3.14159265358979323846;
 }
 
-bool loadLdJsonMetadata(const std::string& path, LdJsonMetadata& metadata, std::string& error) {
+bool loadLdJsonMetadata(const std::string& path, LdJsonMetadata& metadata, std::string& error, bool ignoreFields) {
     try {
         std::ifstream is(path, std::ios::binary);
         if (!is.is_open()) {
@@ -80,6 +81,7 @@ bool loadLdJsonMetadata(const std::string& path, LdJsonMetadata& metadata, std::
         metadata.videoParameters.isWidescreen = getBool("isWidescreen");
 
         metadata.fields.clear();
+        if (ignoreFields) return true;
         if (!root.contains("fields") || !root["fields"].is_array()) {
             error = "Metadata JSON is missing required array: fields";
             return false;
@@ -102,6 +104,40 @@ bool loadLdJsonMetadata(const std::string& path, LdJsonMetadata& metadata, std::
         return true;
     } catch (const std::exception& e) {
         error = std::string("Failed to parse metadata JSON: ") + e.what();
+        return false;
+    }
+}
+
+bool appendGeneratedFieldMetadata(LdJsonMetadata& metadata, std::size_t fieldCount, std::string& error) {
+    if (fieldCount == 0) return true;
+    // Generated sequence numbers are absolute field indices and must remain representable by the metadata type.
+    const std::size_t currentCount = metadata.fields.size();
+    const std::size_t maxSequenceNumber = static_cast<std::size_t>(std::numeric_limits<int>::max());
+    if (currentCount > maxSequenceNumber || fieldCount - 1 > maxSequenceNumber - currentCount) {
+        error = "Generated field metadata exceeds the supported sequence number range.";
+        return false;
+    }
+    if (fieldCount > metadata.fields.max_size() - currentCount) {
+        error = "Generated field metadata exceeds the supported vector size.";
+        return false;
+    }
+    try {
+        metadata.fields.reserve(currentCount + fieldCount);
+        // Match the deterministic field metadata produced when no source field array is available.
+        for (std::size_t fieldIndex = currentCount; fieldIndex < currentCount + fieldCount; ++fieldIndex) {
+            LdJsonFieldMeta fieldMeta;
+            fieldMeta.audioSamples = 0;
+            fieldMeta.fieldPhaseID = static_cast<int>(fieldIndex % 4) + 1;
+            fieldMeta.isFirstField = (fieldIndex % 2) == 0;
+            fieldMeta.medianBurstIRE = 20;
+            fieldMeta.pad = false;
+            fieldMeta.seqNo = static_cast<int>(fieldIndex);
+            fieldMeta.syncConf = 100;
+            metadata.fields.push_back(fieldMeta);
+        }
+        return true;
+    } catch (const std::exception& e) {
+        error = std::string("Failed to allocate generated field metadata: ") + e.what();
         return false;
     }
 }
@@ -169,14 +205,14 @@ double Y4mNtscWriter::convolve5Tap(const std::vector<double>& data, int index) c
 }
 
 Y4mNtscWriter::Y4mNtscWriter(const LdJsonMetadata& metadata_, const Y4mNtscConfig& config_, std::ostream& output_)
-    : metadata(metadata_), config(config_), output(&output_) {
-    const std::string system = normalizeSystem(metadata.videoParameters.system);
+    : metadata(&metadata_), config(config_), output(&output_) {
+    const std::string system = normalizeSystem(metadata->videoParameters.system);
     if (system != "NTSC" && system != "NTSC-J") throw std::runtime_error("Y4M mode supports NTSC/NTSC-J metadata only.");
-    frameWidth = metadata.videoParameters.fieldWidth;
-    frameHeight = (metadata.videoParameters.fieldHeight * 2) - 1;
+    frameWidth = metadata->videoParameters.fieldWidth;
+    frameHeight = (metadata->videoParameters.fieldHeight * 2) - 1;
     if (frameWidth <= 0 || frameHeight <= 0) throw std::runtime_error("Metadata contains invalid frame dimensions.");
-    const int black16bIre = config.levelsOverride ? config.black16bIreOverride : metadata.videoParameters.black16bIre;
-    const int white16bIre = config.levelsOverride ? config.white16bIreOverride : metadata.videoParameters.white16bIre;
+    const int black16bIre = config.levelsOverride ? config.black16bIreOverride : metadata->videoParameters.black16bIre;
+    const int white16bIre = config.levelsOverride ? config.white16bIreOverride : metadata->videoParameters.white16bIre;
     if (white16bIre <= black16bIre) throw std::runtime_error("Resolved black/white levels are invalid.");
     if (config.chromaGain < 0.0 || !std::isfinite(config.chromaGain)) throw std::runtime_error("Resolved chroma gain is invalid.");
 
@@ -185,8 +221,8 @@ Y4mNtscWriter::Y4mNtscWriter(const LdJsonMetadata& metadata_, const Y4mNtscConfi
     yStart = 0;
     yEnd = frameHeight;
     if (!config.fullFrame) {
-        xStart = (config.activeVideoStartOverride >= 0) ? config.activeVideoStartOverride : metadata.videoParameters.activeVideoStart;
-        xEnd = (config.activeVideoEndOverride >= 0) ? config.activeVideoEndOverride : metadata.videoParameters.activeVideoEnd;
+        xStart = (config.activeVideoStartOverride >= 0) ? config.activeVideoStartOverride : metadata->videoParameters.activeVideoStart;
+        xEnd = (config.activeVideoEndOverride >= 0) ? config.activeVideoEndOverride : metadata->videoParameters.activeVideoEnd;
         yStart = config.firstLine;
         yEnd = config.lastLine;
     }
@@ -205,18 +241,20 @@ Y4mNtscWriter::Y4mNtscWriter(const LdJsonMetadata& metadata_, const Y4mNtscConfi
     rotateSin = std::sin(theta);
     rotateCos = std::cos(theta);
 
-    std::vector<int> phases;
-    phases.reserve(metadata.fields.size());
-    for (const LdJsonFieldMeta& field : metadata.fields) {
-        if (field.fieldPhaseID >= 1 && field.fieldPhaseID <= 4) phases.push_back(field.fieldPhaseID);
+    if (!config.generatedFieldMetadata) {
+        std::vector<int> phases;
+        phases.reserve(metadata->fields.size());
+        for (const LdJsonFieldMeta& field : metadata->fields) {
+            if (field.fieldPhaseID >= 1 && field.fieldPhaseID <= 4) phases.push_back(field.fieldPhaseID);
+        }
+        if (phases.empty()) throw std::runtime_error("Metadata fields[] does not contain valid fieldPhaseID values in range 1..4.");
+        const std::size_t period = inferCyclePeriod(phases);
+        phaseCycle.assign(phases.begin(), phases.begin() + static_cast<std::ptrdiff_t>(period));
     }
-    if (phases.empty()) throw std::runtime_error("Metadata fields[] does not contain valid fieldPhaseID values in range 1..4.");
-    const std::size_t period = inferCyclePeriod(phases);
-    phaseCycle.assign(phases.begin(), phases.begin() + static_cast<std::ptrdiff_t>(period));
     frameIndex = config.frameIndexOffset;
 
-    const char interlaceTag = metadata.fields.front().isFirstField ? 't' : 'b';
-    const char* aspectTag = metadata.videoParameters.isWidescreen ? "25:22" : "352:413";
+    const char interlaceTag = config.generatedFieldMetadata ? 't' : (metadata->fields.front().isFirstField ? 't' : 'b');
+    const char* aspectTag = metadata->videoParameters.isWidescreen ? "25:22" : "352:413";
 
     std::ostringstream header;
     header << "YUV4MPEG2 W" << outputWidth << " H" << outputHeight << " F30000:1001 I" << interlaceTag << " A" << aspectTag << " C444p16 XCOLORRANGE=LIMITED\n";
@@ -228,9 +266,19 @@ void Y4mNtscWriter::writeFrame(const std::vector<uint16_t>& lumaPlane, const std
     const std::size_t requiredSamples = static_cast<std::size_t>(frameWidth) * static_cast<std::size_t>(frameHeight);
     if (lumaPlane.size() < requiredSamples || chromaPlane.size() < requiredSamples) throw std::runtime_error("Y4M writer received frame planes smaller than required by metadata dimensions.");
 
+    if (frameIndex > (std::numeric_limits<std::size_t>::max() / 2)) throw std::runtime_error("Y4M frame index exceeds the supported field metadata range.");
     const std::size_t phaseBase = frameIndex * 2;
-    const int firstFieldPhaseID = phaseCycle[phaseBase % phaseCycle.size()];
-    const int secondFieldPhaseID = phaseCycle[(phaseBase + 1) % phaseCycle.size()];
+    int firstFieldPhaseID = 0;
+    int secondFieldPhaseID = 0;
+    if (config.generatedFieldMetadata) {
+        // Generated entries are indexed by absolute source field so decode range selection cannot reset phase.
+        if (phaseBase >= metadata->fields.size() || metadata->fields.size() - phaseBase < 2) throw std::runtime_error("Generated field metadata is unavailable for the current Y4M source frame.");
+        firstFieldPhaseID = metadata->fields[phaseBase].fieldPhaseID;
+        secondFieldPhaseID = metadata->fields[phaseBase + 1].fieldPhaseID;
+    } else {
+        firstFieldPhaseID = phaseCycle[phaseBase % phaseCycle.size()];
+        secondFieldPhaseID = phaseCycle[(phaseBase + 1) % phaseCycle.size()];
+    }
     frameIndex++;
 
     const std::size_t framePixels = static_cast<std::size_t>(outputWidth) * static_cast<std::size_t>(outputHeight);

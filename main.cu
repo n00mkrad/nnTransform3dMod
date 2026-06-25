@@ -695,7 +695,7 @@ bool resolveModelPath(const char* argv0, const std::string& modelPathArg, bool m
 }
 
 void printUsage(const char* exeName) {
-    std::cerr << "Usage: " << exeName << " [--input <path|->] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--full-frame] [--force-limited] [--levels <black:white|ntsc|ntscj>] [--chroma-gain <number>] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc|-]\n";
+    std::cerr << "Usage: " << exeName << " [--input <path|->] [--model <path>] [--gpu <num>] [--trt_mpi <num>] [--trt_mss <num>] [--start-frame <num>] [--end-frame <num>] [--av-start <num>] [--av-end <num>] [--width <num>] [--out-mode tbc|raw_y|raw_yc|y4m] [--tbc-pipe-mode <y|c|yc_alt|yc_stack>] [--json <path>] [--no-field-meta] [--full-frame] [--force-limited] [--levels <black:white|ntsc|ntscj>] [--chroma-gain <number>] [--first-line <num>] [--last-line <num>] [--lines <num>] [-q] [--out <path|->] [input.tbc|-]\n";
     std::cerr << "Defaults: --out-mode tbc, --gpu 0, --trt_mpi 1000, --trt_mss 1, --start-frame 0, --end-frame 0, --av-start 132, --av-end 896, --lines 480\n";
 }
 
@@ -790,6 +790,7 @@ int main(int argc, char** argv) {
     bool widthSpecified = false;
     std::string jsonPath;
     bool jsonSpecified = false;
+    bool noFieldMeta = false;
     std::string outPath;
     bool outPathSpecified = false;
     bool inputSpecified = false;
@@ -1042,6 +1043,9 @@ int main(int argc, char** argv) {
             jsonPath = argv[++argIndex];
             jsonSpecified = true;
         }
+        else if (arg == "--no-field-meta") {
+            noFieldMeta = true;
+        }
         else if (arg == "--full-frame") {
             fullFrame = true;
         }
@@ -1219,7 +1223,7 @@ int main(int argc, char** argv) {
     }
 
     metadataPathResolved = jsonSpecified ? jsonPath : (readInputFromStdin ? "" : inFile + ".json");
-    if (!metadataPathResolved.empty() && loadLdJsonMetadata(metadataPathResolved, metadata, metadataError)) {
+    if (!metadataPathResolved.empty() && loadLdJsonMetadata(metadataPathResolved, metadata, metadataError, noFieldMeta)) {
         metadataLoaded = true;
         if (!avStartSpecified) activeVideoStart = metadata.videoParameters.activeVideoStart;
         if (!avEndSpecified) activeVideoEnd = metadata.videoParameters.activeVideoEnd;
@@ -1295,6 +1299,7 @@ int main(int argc, char** argv) {
     log << "Target Input: " << (readInputFromStdin ? "stdin (-)" : inFile) << "\n";
     if (metadataPathResolved.empty()) log << "Metadata Input: not specified (using defaults)\n";
     else log << "Metadata Input: " << metadataPathResolved << (metadataLoaded ? " (loaded)\n" : " (not loaded, using defaults)\n");
+    if (noFieldMeta && readInputFromStdin) log << "Field Metadata: generated incrementally from successfully read stdin frames.\n";
     if (!metadataLoaded && !metadataError.empty()) {
         log << "Metadata Load Note: " << metadataError << "\n";
     }
@@ -1373,6 +1378,20 @@ int main(int argc, char** argv) {
             std::cerr << "[Error] File is too small to contain even ONE frame!\n";
             return -1;
         }
+        if (noFieldMeta) {
+            // File inputs can generate the complete absolute field timeline before decoding starts.
+            const unsigned long long totalFramesUnsigned = static_cast<unsigned long long>(totalFramesAvailable);
+            if (totalFramesUnsigned > static_cast<unsigned long long>(std::numeric_limits<std::size_t>::max() / 2)) {
+                std::cerr << "[Error] Input file contains too many frames to generate field metadata.\n";
+                return -1;
+            }
+            std::string generatedFieldMetadataError;
+            if (!appendGeneratedFieldMetadata(metadata, static_cast<std::size_t>(totalFramesUnsigned * 2), generatedFieldMetadataError)) {
+                std::cerr << "[Error] " << generatedFieldMetadataError << "\n";
+                return -1;
+            }
+            log << "Field Metadata: generated " << metadata.fields.size() << " entries for the complete input file.\n";
+        }
         if (startFrame >= totalFramesAvailable) {
             std::cerr << "[Error] --start-frame " << startFrame << " is out of range. Available frame indices: 0.." << (totalFramesAvailable - 1) << ".\n";
             return -1;
@@ -1401,7 +1420,17 @@ int main(int argc, char** argv) {
         std::vector<uint16_t> skippedFrameSamples;
         for (long long skippedFrame = 0; skippedFrame < decodeStartFrame; ++skippedFrame) {
             FrameReadResult skipResult = readTbcFrameSamples(*inputStream, skippedFrameSamples);
-            if (skipResult == FrameReadResult::Complete) continue;
+            if (skipResult == FrameReadResult::Complete) {
+                if (noFieldMeta) {
+                    // Preserve absolute field numbering for frames consumed before temporal pre-roll.
+                    std::string generatedFieldMetadataError;
+                    if (!appendGeneratedFieldMetadata(metadata, 2, generatedFieldMetadataError)) {
+                        std::cerr << "[Error] " << generatedFieldMetadataError << "\n";
+                        return -1;
+                    }
+                }
+                continue;
+            }
             if (skipResult == FrameReadResult::Truncated) std::cerr << "[Error] Piped TBC input was truncated while skipping to --start-frame " << startFrame << ".\n";
             else std::cerr << "[Error] Piped TBC input ended before --start-frame " << startFrame << " could be reached.\n";
             return -1;
@@ -1450,6 +1479,7 @@ int main(int argc, char** argv) {
             Y4mNtscConfig y4mConfig;
             y4mConfig.fullFrame = fullFrame;
             y4mConfig.forceLimited = forceLimited;
+            y4mConfig.generatedFieldMetadata = noFieldMeta;
             y4mConfig.levelsOverride = levelsSpecified;
             y4mConfig.black16bIreOverride = black16bIreOverride;
             y4mConfig.white16bIreOverride = white16bIreOverride;
@@ -1568,6 +1598,14 @@ int main(int argc, char** argv) {
         }
         return -1;
     }
+    if (noFieldMeta && readInputFromStdin) {
+        // Stdin metadata grows only after a complete source frame has been accepted.
+        std::string generatedFieldMetadataError;
+        if (!appendGeneratedFieldMetadata(metadata, 2, generatedFieldMetadataError)) {
+            std::cerr << "[Error] " << generatedFieldMetadataError << "\n";
+            return -1;
+        }
+    }
     // Send the newly read first frame into GPU
     cudaMemcpy(frame1.d_cvbs, frame1.cvbs.data(), FRAME_WIDTH * FRAME_HEIGHT * sizeof(uint16_t), cudaMemcpyHostToDevice);
 
@@ -1592,6 +1630,15 @@ int main(int argc, char** argv) {
             truncatedInput = (readResult == FrameReadResult::Truncated);
             if (truncatedInput) std::cerr << "[Error] TBC input ended with an incomplete trailing frame.\n";
             break;
+        }
+        if (noFieldMeta && readInputFromStdin) {
+            // Include real lookahead frames so generated metadata mirrors every consumed source frame.
+            std::string generatedFieldMetadataError;
+            if (!appendGeneratedFieldMetadata(metadata, 2, generatedFieldMetadataError)) {
+                std::cerr << "[Error] " << generatedFieldMetadataError << "\n";
+                processingFailed = true;
+                break;
+            }
         }
         decodedFrameCount++;
         try {
@@ -1658,5 +1705,6 @@ int main(int argc, char** argv) {
     }
 
     log << "All Done! Total decode frames: " << decodedFrameCount << ", emitted frames: " << emittedFrameCount << "\n";
+    if (noFieldMeta && readInputFromStdin) log << "Generated Field Metadata Entries: " << metadata.fields.size() << "\n";
     return (processingFailed || truncatedInput || requestedRangeIncomplete) ? -1 : 0;
 }
